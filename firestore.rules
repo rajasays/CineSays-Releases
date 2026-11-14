@@ -1,0 +1,75 @@
+rules_version = '2';
+
+// Security rules for CineSays Friends & Recommendations.
+// Paste into Firebase console › Firestore Database › Rules, then Publish.
+//
+// Data model (written by SocialRepository.kt):
+//   profiles/{uid}                     name, friendCode
+//   friendCodes/{code}                 uid
+//   profiles/{uid}/requests/{senderId} senderName, senderId   (incoming friend requests)
+//   profiles/{uid}/friends/{friendId}  name
+//   profiles/{uid}/received/{recId}    a recommendation sent to uid
+//   profiles/{uid}/sent/{recId}        uid's own copy of what they sent
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function isFriend(owner, other) { return exists(/databases/$(database)/documents/profiles/$(owner)/friends/$(other)); }
+    function shortText(v, max) { return v is string && v.size() <= max; }
+
+    match /profiles/{uid} {
+      // Any signed-in user can read a profile name (shown when accepting a request).
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update: if signedIn() && me() == uid
+        && request.resource.data.keys().hasOnly(['name', 'friendCode'])
+        && shortText(request.resource.data.name, 40);
+      allow delete: if false;
+
+      // Incoming friend requests: only the sender may create one, addressed from themselves.
+      match /requests/{senderId} {
+        allow read, delete: if signedIn() && me() == uid;
+        allow create: if signedIn() && me() == senderId && senderId != uid
+          && request.resource.data.senderId == me()
+          && shortText(request.resource.data.senderName, 40);
+        allow update: if false;
+      }
+
+      // Friend list: the owner writes their own side; the other side may only be written
+      // by someone whose friend request the owner sent (the accept flow, in one batch).
+      match /friends/{friendId} {
+        allow read: if signedIn() && me() == uid;
+        allow create: if signedIn() && shortText(request.resource.data.name, 40) && (
+          me() == uid ||
+          (me() == friendId && exists(/databases/$(database)/documents/profiles/$(me())/requests/$(uid)))
+        );
+        allow update: if signedIn() && me() == uid;
+        allow delete: if signedIn() && (me() == uid || me() == friendId);
+      }
+
+      // Recommendations: only friends can send, and only as themselves.
+      match /received/{recId} {
+        allow read, delete: if signedIn() && me() == uid;
+        allow create: if signedIn() && isFriend(uid, me())
+          && request.resource.data.senderId == me()
+          && shortText(request.resource.data.note, 280)
+          && shortText(request.resource.data.title, 300);
+        allow update: if false;
+      }
+
+      match /sent/{recId} {
+        allow read, write: if signedIn() && me() == uid;
+      }
+    }
+
+    // Friend codes: look up one code at a time (no listing); a code can be claimed once, by its owner.
+    match /friendCodes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.uid == me() && request.resource.data.keys().hasOnly(['uid']);
+      allow update, delete: if false;
+    }
+  }
+}

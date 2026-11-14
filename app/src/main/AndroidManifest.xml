@@ -1,0 +1,42 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Lets CineSays hand a downloaded update APK to the system installer (the user still confirms). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-feature android:name="android.software.leanback" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <queries>
+        <package android:name="com.netflix.ninja" />
+        <package android:name="com.netflix.mediaclient" />
+        <package android:name="com.amazon.amazonvideo.livingroom" />
+        <package android:name="com.amazon.avod.thirdpartyclient" />
+        <package android:name="com.apple.atve.androidtv.appletv" />
+        <package android:name="com.wbd.stream" />
+        <package android:name="com.hbo.hbonow" />
+        <package android:name="com.google.android.youtube.tv" />
+        <package android:name="com.disney.disneyplus" />
+        <package android:name="com.tubitv" />
+        <package android:name="tv.pluto.android" />
+        <package android:name="com.plexapp.android" />
+        <package android:name="com.graymatrix.did" />
+        <package android:name="in.startv.hotstar" />
+        <package android:name="com.sonyliv" />
+        <package android:name="com.mubi" />
+    </queries>
+    <application android:label="CineSays" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="false" android:icon="@drawable/cinesays_launcher" android:roundIcon="@drawable/cinesays_launcher" android:banner="@drawable/cinesays_tv_banner" android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Shares only cache/updates/ with the package installer. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
+        </provider>
+    </application>
+</manifest>

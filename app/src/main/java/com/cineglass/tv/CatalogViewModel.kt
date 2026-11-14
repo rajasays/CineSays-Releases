@@ -1,0 +1,436 @@
+package com.cineglass.tv
+
+import android.app.Application
+import android.os.SystemClock
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.time.LocalDate
+import kotlin.random.Random
+
+private val Application.store by preferencesDataStore("cineglass_settings")
+private val WATCHLIST = stringPreferencesKey("watchlist")
+private val REGION = stringPreferencesKey("region")
+private val REGIONS = stringPreferencesKey("regions")
+private val AVAILABLE_REGIONS = setOf("US", "GB", "PK", "CA", "AU", "IN", "DE", "FR", "AE", "JP")
+private val MY_SERVICES = stringPreferencesKey("my_services")
+private val ONBOARDED = stringPreferencesKey("onboarded")
+
+/** A subscription the user can mark as theirs. Some services have more than one TMDB provider ID. */
+/** [free] = no subscription needed (ad-supported); TMDB lists those under "free"/"ads", not "flatrate". */
+data class StreamingService(val key: String, val label: String, val providerIds: List<Int>, val free: Boolean = false)
+// Provider IDs checked against TMDB's /watch/providers lists for US, GB, IN and PK (Nov 2026).
+val STREAMING_SERVICES = listOf(
+    StreamingService("netflix", "Netflix", listOf(8)),
+    StreamingService("prime", "Prime Video", listOf(9, 119)),
+    StreamingService("max", "Max", listOf(1899, 384)),
+    StreamingService("disney", "Disney+", listOf(337)),
+    StreamingService("apple", "Apple TV+", listOf(350)),
+    StreamingService("paramount", "Paramount+", listOf(531)),
+    StreamingService("hulu", "Hulu", listOf(15)),
+    // Regional subscriptions
+    StreamingService("zee5", "Zee5", listOf(232)),
+    StreamingService("jiohotstar", "JioHotstar", listOf(2336)),
+    StreamingService("sonyliv", "Sony LIV", listOf(237, 2792)),
+    StreamingService("mubi", "MUBI", listOf(11)),
+    // Free, ad-supported
+    StreamingService("tubi", "Tubi", listOf(73), free = true),
+    StreamingService("pluto", "Pluto TV", listOf(300), free = true),
+    StreamingService("plex", "Plex", listOf(538), free = true),
+    StreamingService("youtubefree", "YouTube (free)", listOf(235), free = true)
+)
+/** Provider IDs whose catalogue is ad-supported, so discovery must ask for free|ads offers. */
+val FREE_PROVIDER_IDS: Set<Int> = STREAMING_SERVICES.filter { it.free }.flatMap { it.providerIds }.toSet()
+/** "My services" can mix paid and free services, so it asks for every no-extra-cost offer type. */
+private const val MY_MONETIZATION = "flatrate|free|ads"
+/** Sentinel provider value meaning "whatever the user subscribes to"; resolved at request time. */
+const val MY_SERVICES_PROVIDER = "mine"
+
+/** A home/browse row. [kind] lets the Movies and TV tabs filter rows without string matching on titles. */
+data class CatalogSection(val title: String, val kind: String, val items: List<TitleItem>)
+
+private class RowRequest(val title: String, val kind: String, val fetch: suspend () -> List<TitleItem>)
+
+data class ScreenState(
+    val regions: Set<String> = setOf("US"), val sections: List<CatalogSection> = emptyList(),
+    val results: List<TitleItem> = emptyList(), val searching: Boolean = false,
+    val watchlistItems: List<TitleItem> = emptyList(), val watchlistBusy: Boolean = false,
+    val selected: TitleItem? = null, val detailBusy: Boolean = false,
+    val providersByRegion: Map<String, ProviderRegion> = emptyMap(), val trailer: String? = null,
+    val imdbRating: String? = null, val rottenTomatoes: String? = null,
+    val watchlist: Set<String> = emptySet(), val busy: Boolean = false, val error: String? = null,
+    /** Keys from [STREAMING_SERVICES] the user pays for. */
+    val myServices: Set<String> = emptySet(),
+    val genreTitles: List<TitleItem> = emptyList(),
+    val roulettePick: TitleItem? = null, val rouletteBusy: Boolean = false, val genreBusy: Boolean = false,
+    /** Best place to watch the roulette pick: a no-extra-cost offer, the user's own services first. */
+    val rouletteOffer: Pair<Provider, String>? = null,
+    val cast: List<CastMember> = emptyList(), val similar: List<TitleItem> = emptyList(),
+    /** null until preferences load; false shows the first-run "My Services" step. */
+    val onboarded: Boolean? = null
+)
+
+/** Roulette moods map to TMDB genres (OR-ed) plus a rating floor. Movie genre IDs; TV is mapped. */
+data class RouletteMood(val label: String, val genres: List<Int>, val minRating: Double = 0.0)
+val ROULETTE_MOODS = listOf(
+    RouletteMood("Something light", listOf(35, 10751, 16)),
+    RouletteMood("Edge of my seat", listOf(53, 28, 80)),
+    RouletteMood("A good cry", listOf(18, 10749), 7.0),
+    RouletteMood("Mind-bending", listOf(878, 9648, 14)),
+    RouletteMood("Scary", listOf(27)),
+    RouletteMood("Family night", listOf(10751, 16, 12)),
+    RouletteMood("Critically loved", emptyList(), 7.8),
+    RouletteMood("Surprise me", emptyList())
+)
+
+class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
+    private val _state = MutableStateFlow(ScreenState())
+    val state: StateFlow<ScreenState> = _state
+    private val key get() = BuildConfig.TMDB_API_KEY
+    private val providerRows = listOf("Netflix" to "8", "Prime Video" to "9", "Apple TV+" to "350", "HBO Max" to "1899", "Disney+" to "337")
+
+    // One in-flight job per feature: a newer request cancels the older one so stale
+    // responses can never overwrite fresher results.
+    private var refreshJob: Job? = null
+    private var searchJob: Job? = null
+    private var genreJob: Job? = null
+    private var detailJob: Job? = null
+    private var watchlistJob: Job? = null
+    private val recentPicks = ArrayDeque<String>()
+
+    init {
+        viewModelScope.launch {
+            val p = app.store.data.first()
+            val saved = p[REGIONS]?.split(",")?.filter { it in AVAILABLE_REGIONS }?.toSet().orEmpty()
+            val migrated = p[REGION]?.takeIf { it in AVAILABLE_REGIONS } ?: "US"
+            val services = p[MY_SERVICES].orEmpty().split(",").filter { k -> STREAMING_SERVICES.any { it.key == k } }.toSet()
+            _state.update { it.copy(regions = saved.ifEmpty { setOf(migrated) }, myServices = services,
+                onboarded = p[ONBOARDED] == "1" || services.isNotEmpty(),
+                watchlist = p[WATCHLIST].orEmpty().split(",").filter { s -> s.isNotBlank() }.toCollection(LinkedHashSet())) }
+            refresh()
+        }
+    }
+
+    /** Call with the provider value as the UI chose it (before [resolveProvider]). */
+    private fun monetizationFor(providerId: String?) = when {
+        providerId == null -> null
+        providerId == "192" -> "rent"
+        providerId == MY_SERVICES_PROVIDER -> MY_MONETIZATION
+        providerId.split("|").mapNotNull { it.toIntOrNull() }.all { it in FREE_PROVIDER_IDS } -> "free|ads"
+        else -> "flatrate"
+    }
+
+    /** TMDB provider IDs of the user's services, e.g. [8, 9, 119]. */
+    fun myProviderIds(services: Set<String> = _state.value.myServices): Set<Int> =
+        STREAMING_SERVICES.filter { it.key in services }.flatMap { it.providerIds }.toSet()
+
+    /** TMDB accepts "8|9|337" as OR. Returns null when the user has not picked any services. */
+    private fun myServicesFilter(): String? = myProviderIds().takeIf { it.isNotEmpty() }?.sorted()?.joinToString("|")
+
+    /** Turns the [MY_SERVICES_PROVIDER] sentinel into real IDs; passes other values through. */
+    private fun resolveProvider(providerId: String?): String? =
+        if (providerId == MY_SERVICES_PROVIDER) myServicesFilter() else providerId
+
+    /** Leaves the Roulette result and returns to the filters and wheel. */
+    fun clearRoulettePick() { _state.update { it.copy(roulettePick = null, rouletteOffer = null) } }
+
+    fun finishOnboarding() {
+        _state.update { it.copy(onboarded = true) }
+        viewModelScope.launch { app.store.edit { it[ONBOARDED] = "1" } }
+    }
+
+    fun toggleService(key: String) {
+        if (STREAMING_SERVICES.none { it.key == key }) return
+        val current = _state.value.myServices
+        val updated = if (key in current) current - key else current + key
+        _state.update { it.copy(myServices = updated) }
+        viewModelScope.launch { app.store.edit { it[MY_SERVICES] = updated.sorted().joinToString(",") } }
+        refresh() // Rebuilds the "New on your services" row.
+    }
+
+    // Union the results by TMDB kind + ID; a title available in two selected regions
+    // appears only once in discovery, but its regional offers stay separate on details.
+    // Regions are queried in parallel instead of one after another.
+    private suspend fun discoverRegions(
+        kind: String, providerId: String? = null, monetization: String? = null,
+        genreId: Int? = null, sort: String = "popularity.desc", page: Int = 1,
+        extra: Map<String, String> = emptyMap()
+    ): List<TitleItem> = coroutineScope {
+        val regions = _state.value.regions.sorted()
+        val pages = regions.map { region ->
+            async { runCatching { Api.tmdb.discover(kind, key, region, providerId, monetization, sort, genreId, page, extra = extra) } }
+        }.awaitAll()
+        val combined = linkedMapOf<String, TitleItem>()
+        pages.forEach { r -> r.getOrNull()?.results?.forEach { t -> combined.putIfAbsent("$kind:${t.id}", t.copy(mediaType = kind)) } }
+        if (combined.isEmpty()) pages.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+        combined.values.toList()
+    }
+
+    /** "New" rows: released (not future/unknown) titles that actually have an offer in the selected regions. */
+    private fun recentExtra(kind: String): Map<String, String> {
+        val today = LocalDate.now().toString()
+        return if (kind == "movie") mapOf("primary_release_date.lte" to today, "vote_count.gte" to "10")
+        else mapOf("first_air_date.lte" to today, "vote_count.gte" to "5")
+    }
+
+    fun refresh() {
+        if (key.isBlank()) { _state.update { it.copy(error = "Add TMDB_API_KEY to local.properties and rebuild the app.") }; return }
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val requests: List<RowRequest> = listOf(
+                RowRequest("Trending Movies", "movie") { Api.tmdb.trending("movie", key).results.map { it.copy(mediaType = "movie") } },
+                RowRequest("Trending TV", "tv") { Api.tmdb.trending("tv", key).results.map { it.copy(mediaType = "tv") } },
+                RowRequest("New Movies", "movie") { discoverRegions("movie", monetization = "flatrate|rent|buy", sort = "primary_release_date.desc", extra = recentExtra("movie")) },
+                RowRequest("New TV", "tv") { discoverRegions("tv", monetization = "flatrate", sort = "first_air_date.desc", extra = recentExtra("tv")) }
+            ) + listOfNotNull(myServicesFilter()?.let { mine ->
+                // Movies and series together, newest first, only from services the user pays for.
+                RowRequest("New on your services", "both") {
+                    coroutineScope {
+                        val movies = async { discoverRegions("movie", mine, MY_MONETIZATION, sort = "primary_release_date.desc", extra = recentExtra("movie")) }
+                        val shows = async { discoverRegions("tv", mine, MY_MONETIZATION, sort = "first_air_date.desc", extra = recentExtra("tv")) }
+                        (movies.await() + shows.await()).sortedByDescending { it.releaseDate ?: it.firstAirDate ?: "" }
+                    }
+                }
+            }) + providerRows.flatMap { (name, id) ->
+                listOf(
+                    RowRequest("$name · Movies", "movie") { discoverRegions("movie", id, "flatrate") },
+                    RowRequest("$name · TV", "tv") { discoverRegions("tv", id, "flatrate") }
+                )
+            }
+            // All rows load concurrently (bounded so a multi-region setup doesn't burst TMDB).
+            val gate = Semaphore(6)
+            val loaded = coroutineScope {
+                requests.map { r ->
+                    async { gate.withPermit { runCatching { CatalogSection(r.title, r.kind, r.fetch().filter { it.poster != null }.distinctBy { it.ref }) } } }
+                }.awaitAll()
+            }
+            // "New on your services" goes first on Home when present.
+            val sections = loaded.mapNotNull { it.getOrNull() }.filter { it.items.isNotEmpty() }
+                .sortedBy { if (it.kind == "both") 0 else 1 }
+            val error = if (sections.isEmpty()) loaded.firstNotNullOfOrNull { it.exceptionOrNull() }?.message ?: "Unable to load catalog" else null
+            _state.update { it.copy(sections = sections, busy = false, error = error) }
+        }
+    }
+
+    fun clearError() { if (_state.value.error != null) _state.update { it.copy(error = null) } }
+
+    // TMDB defines several different genre IDs for movie and TV catalogues.
+    private fun genreForKind(kind: String, genreId: Int?): Int? {
+        if (kind != "tv") return genreId
+        return when (genreId) {
+            28, 12 -> 10759 // Action & Adventure
+            878, 14 -> 10765 // Sci-Fi & Fantasy
+            10749 -> 18     // Romance: closest TV equivalent is Drama
+            27, 53 -> 9648  // Horror / Thriller: closest TV equivalent is Mystery
+            else -> genreId
+        }
+    }
+
+    /** Discover sort keys: "popular", "top" (well-rated with enough votes), "new" (released, newest first). */
+    private fun sortParams(kind: String, sort: String): Pair<String, Map<String, String>> = when (sort) {
+        "top" -> "vote_average.desc" to mapOf("vote_count.gte" to if (kind == "movie") "300" else "150")
+        "new" -> (if (kind == "movie") "primary_release_date.desc" else "first_air_date.desc") to recentExtra(kind)
+        else -> "popularity.desc" to emptyMap()
+    }
+
+    fun discoverGenre(kind: String, genreId: Int?, requestedProvider: String?, sort: String = "popular") {
+        if (key.isBlank()) return
+        val providerId = resolveProvider(requestedProvider)
+        val monetization = monetizationFor(requestedProvider)
+        genreJob?.cancel()
+        genreJob = viewModelScope.launch {
+            _state.update { it.copy(genreBusy = true, genreTitles = emptyList()) }
+            try {
+                val kinds = if (kind == "both") listOf("movie", "tv") else listOf(kind)
+                val titles = coroutineScope {
+                    kinds.map { c -> async {
+                        val (sortBy, extra) = sortParams(c, sort)
+                        discoverRegions(c, providerId, monetization, genreForKind(c, genreId), sort = sortBy, extra = extra)
+                    } }.awaitAll()
+                }.flatten().distinctBy { it.ref }.filter { it.poster != null }
+                    .let { list -> if (sort == "top") list.sortedByDescending { it.rating } else list }
+                _state.update { it.copy(genreTitles = titles, genreBusy = false) }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = e.message, genreBusy = false) } }
+        }
+    }
+
+    /**
+     * Mood roulette.
+     * [length]: "episode" (TV only), "short" (movies up to 2 h), "any".
+     * [source]: "mine" (the user's services), "watchlist" (saved titles only), "any".
+     */
+    fun spin(mood: RouletteMood, length: String, source: String) {
+        if (key.isBlank() || _state.value.rouletteBusy) return
+        val requestedProvider = if (source == "mine" && _state.value.myServices.isNotEmpty()) MY_SERVICES_PROVIDER else null
+        val providerId = resolveProvider(requestedProvider)
+        val monetization = monetizationFor(requestedProvider)
+        viewModelScope.launch {
+            val started = SystemClock.elapsedRealtime()
+            _state.update { it.copy(rouletteBusy = true, roulettePick = null, rouletteOffer = null, error = null) }
+            try {
+                val kinds = when (length) { "episode" -> listOf("tv"); "short" -> listOf("movie"); else -> listOf("movie", "tv") }
+                fun genresFor(kind: String) = mood.genres.mapNotNull { genreForKind(kind, it) }.distinct().joinToString("|").ifBlank { null }
+                fun extraFor(kind: String) = buildMap {
+                    if (mood.minRating > 0) { put("vote_average.gte", mood.minRating.toString()); put("vote_count.gte", "100") }
+                    if (kind == "movie" && length == "short") put("with_runtime.lte", "120")
+                    genresFor(kind)?.let { put("with_genres", it) }
+                }
+                suspend fun fetch(page: Int): List<TitleItem> = if (source == "watchlist") {
+                    // Watchlist source: pick from saved titles, still honouring type and mood genre filters loosely.
+                    if (_state.value.watchlistItems.isEmpty()) loadWatchlistNow()
+                    _state.value.watchlistItems.filter { it.kind in kinds }
+                } else coroutineScope {
+                    kinds.map { c -> async { discoverRegions(c, providerId, monetization, null, page = page, extra = extraFor(c)) } }.awaitAll()
+                }.flatten().filter { it.poster != null && !it.overview.isNullOrBlank() }
+                // Randomise among the first five popular pages, but niche filter combinations
+                // may have fewer pages: fall back to page 1 instead of reporting "nothing found".
+                val page = if (source == "watchlist") 1 else Random.nextInt(1, 6)
+                var candidates = fetch(page)
+                if (candidates.isEmpty() && page > 1) candidates = fetch(1)
+                // Avoid handing back something the wheel picked in the last few spins.
+                val pick = candidates.filter { it.ref !in recentPicks }.randomOrNull() ?: candidates.randomOrNull()
+                pick?.let { recentPicks.addLast(it.ref); if (recentPicks.size > 15) recentPicks.removeFirst() }
+                // Where to watch it, so the result card can open the right app directly.
+                val detail = pick?.let { p -> runCatching { Api.tmdb.fullDetail(p.kind, p.id, key) }.getOrNull() }
+                val offer = detail?.providers?.results?.let { byRegion -> bestOffer(byRegion) }
+                val enriched = pick?.let { p -> detail?.toItem(p.kind) ?: p }
+                // Let the wheel visibly rotate for at least ~2.2 s in total, not 2.2 s on top of the network time.
+                val remaining = 2200 - (SystemClock.elapsedRealtime() - started)
+                if (remaining > 0) delay(remaining)
+                _state.update { it.copy(roulettePick = enriched, rouletteOffer = offer,
+                    error = if (pick == null) "No titles found for this mood. Try another mood, length or source." else null) }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = e.message ?: "Roulette search failed") } }
+            finally { _state.update { it.copy(rouletteBusy = false) } }
+        }
+    }
+
+    /** First no-extra-cost offer in the selected regions, preferring the user's own services. */
+    fun bestOffer(byRegion: Map<String, ProviderRegion>): Pair<Provider, String>? {
+        val mine = myProviderIds()
+        val offers = _state.value.regions.sorted().flatMap { r -> byRegion[r]?.noExtraCost.orEmpty().map { it to r } }
+        return offers.firstOrNull { it.first.id in mine } ?: offers.firstOrNull()
+    }
+
+    private suspend fun loadWatchlistNow() {
+        val items = coroutineScope {
+            _state.value.watchlist.toList().map { ref -> async {
+                val parts = ref.split(":")
+                if (parts.size != 2) null else runCatching { Api.tmdb.detail(parts[0], parts[1].toInt(), key).copy(mediaType = parts[0]) }.getOrNull()
+            } }.awaitAll().filterNotNull()
+        }
+        _state.update { it.copy(watchlistItems = items) }
+    }
+
+    fun search(query: String) {
+        searchJob?.cancel()
+        if (query.isBlank() || key.isBlank()) { _state.update { it.copy(results = emptyList(), searching = false) }; return }
+        searchJob = viewModelScope.launch {
+            _state.update { it.copy(searching = true) }
+            try {
+                val hits = Api.tmdb.search(key, query.trim()).results
+                    .filter { (it.mediaType == "movie" || it.mediaType == "tv") && it.poster != null }
+                _state.update { it.copy(results = hits, searching = false) }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = e.message, searching = false) } }
+        }
+    }
+
+    fun select(item: TitleItem) {
+        _state.update { it.copy(selected = item, detailBusy = true, providersByRegion = emptyMap(), trailer = null, imdbRating = null, rottenTomatoes = null,
+            cast = emptyList(), similar = emptyList()) }
+        detailJob?.cancel()
+        detailJob = viewModelScope.launch {
+            try {
+                // A single append_to_response call replaces four sequential round trips.
+                val full = Api.tmdb.fullDetail(item.kind, item.id, key)
+                val regions = _state.value.regions
+                val videos = full.videos?.results.orEmpty()
+                val trailer = videos.firstOrNull { it.site == "YouTube" && it.type == "Trailer" && it.official }
+                    ?: videos.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }
+                _state.update { it.copy(selected = full.toItem(item.kind), detailBusy = false,
+                    providersByRegion = full.providers?.results.orEmpty().filterKeys { r -> r in regions }, trailer = trailer?.key,
+                    cast = full.credits?.cast.orEmpty().take(10),
+                    similar = full.recommendations?.results.orEmpty().filter { r -> r.poster != null }
+                        .map { r -> r.copy(mediaType = r.mediaType ?: item.kind) }.take(12)) }
+                // Optional ratings; failures must not prevent the details page from working.
+                val omdbKey = BuildConfig.OMDB_API_KEY
+                val imdbId = full.externalIds?.imdbId
+                if (omdbKey.isNotBlank() && !imdbId.isNullOrBlank()) {
+                    runCatching { Api.omdb.detail(omdbKey, imdbId) }.getOrNull()?.let { ratings ->
+                        val imdb = ratings.imdbRating?.takeUnless { it == "N/A" || it.isBlank() }
+                        val rotten = ratings.Ratings.firstOrNull { it.Source == "Rotten Tomatoes" }?.Value?.takeUnless { it == "N/A" || it.isBlank() }
+                        _state.update { it.copy(imdbRating = imdb, rottenTomatoes = rotten) }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = e.message, detailBusy = false) } }
+        }
+    }
+
+    fun selectById(kind: String, id: Int) {
+        if (id <= 0 || (kind != "movie" && kind != "tv")) return
+        // select() fetches full details itself, so no extra pre-fetch is needed.
+        select(TitleItem(id = id, mediaType = kind))
+    }
+
+    fun dismiss() { detailJob?.cancel(); _state.update { it.copy(selected = null, detailBusy = false) } }
+
+    fun toggleRegion(region: String) {
+        if (region !in AVAILABLE_REGIONS) return
+        val current = _state.value.regions
+        val updated = if (region in current) current - region else current + region
+        if (updated.isEmpty()) return // At least one region is required.
+        _state.update { it.copy(regions = updated, providersByRegion = emptyMap()) }
+        viewModelScope.launch { app.store.edit { it[REGIONS] = updated.sorted().joinToString(",") } }
+        refresh() // Cancels any in-flight refresh, so rapid toggling costs one load, not many.
+    }
+
+    fun toggle(item: TitleItem) {
+        val id = item.ref
+        val updated = LinkedHashSet(_state.value.watchlist).apply { if (!add(id)) remove(id) }
+        _state.update { s ->
+            // Keep the Watchlist screen in sync without refetching everything.
+            val items = if (id in updated) (s.watchlistItems.filterNot { it.ref == id } + item) else s.watchlistItems.filterNot { it.ref == id }
+            s.copy(watchlist = updated, watchlistItems = items)
+        }
+        viewModelScope.launch { app.store.edit { it[WATCHLIST] = updated.joinToString(",") } }
+    }
+
+    fun loadWatchlist() {
+        watchlistJob?.cancel()
+        watchlistJob = viewModelScope.launch {
+            _state.update { it.copy(watchlistBusy = true) }
+            val known = (_state.value.watchlistItems + _state.value.sections.flatMap { it.items }).associateBy { it.ref }
+            val gate = Semaphore(6)
+            val items = coroutineScope {
+                _state.value.watchlist.toList().reversed().map { ref ->
+                    async {
+                        known[ref]?.takeIf { it.poster != null } ?: gate.withPermit {
+                            val parts = ref.split(":")
+                            if (parts.size != 2) null
+                            else runCatching { Api.tmdb.detail(parts[0], parts[1].toInt(), key).copy(mediaType = parts[0]) }.getOrNull()
+                        }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            _state.update { it.copy(watchlistItems = items, watchlistBusy = false) }
+        }
+    }
+}

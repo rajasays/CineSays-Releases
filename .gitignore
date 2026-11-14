@@ -1,0 +1,14 @@
+.gradle/
+.idea/
+local.properties
+build/
+app/build/
+*.iml
+
+# Local-only: never publish
+.kotlin/
+dist/
+design/
+keystore/
+*.jks
+*.keystore

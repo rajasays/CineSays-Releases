@@ -1,0 +1,17 @@
+sdk.dir=YOUR_ANDROID_SDK_LOCATION
+TMDB_API_KEY=YOUR_TMDB_API_KEY
+OMDB_API_KEY=YOUR_OMDB_API_KEY
+
+# Optional: Firebase (Friends)
+FIREBASE_API_KEY=
+FIREBASE_APP_ID=
+FIREBASE_PROJECT_ID=
+
+# Optional: GitHub owner/repo whose Releases hold update APKs
+UPDATE_REPO=your-github-name/CineSays
+
+# Optional: release signing (keystore lives in keystore/, both git-ignored)
+RELEASE_STORE_FILE=keystore/cinesays-release.jks
+RELEASE_STORE_PASSWORD=
+RELEASE_KEY_ALIAS=cinesays
+RELEASE_KEY_PASSWORD=
