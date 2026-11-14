@@ -4,7 +4,7 @@ A movie & TV companion for Android TV / Google TV: see what's new on the service
 find where to watch anything across several countries, track episodes, spin a mood-based roulette
 when you can't decide, and swap picks with friends.
 
-**[⬇ Download the latest version](https://github.com/rajasays/CineSays/releases/latest)**
+**[⬇ Download the latest version](https://github.com/rajasays/CineSays-Releases/releases/latest)**
 
 ## Install on your TV
 
@@ -13,7 +13,7 @@ CineSays isn't on the Play Store, so you install it with the free **Downloader**
 1. On your TV, open the **Play Store**, search for **Downloader** (by AFTVnews) and install it.
 2. Open Downloader and type this address into its URL box:
    ```
-   https://github.com/rajasays/CineSays/releases/latest/download/CineSays.apk
+   https://github.com/rajasays/CineSays-Releases/releases/latest/download/CineSays.apk
    ```
 3. When asked, allow **Install unknown apps** for Downloader, then choose **Install**.
 4. Open **CineSays** from your apps row. You can delete the downloaded file in Downloader afterwards.

@@ -1,6 +1,6 @@
 # Publishing CineSays updates on GitHub
 
-Installed copies of CineSays check `https://api.github.com/repos/rajasays/CineSays/releases/latest`
+Installed copies of CineSays check `https://api.github.com/repos/rajasays/CineSays-Releases/releases/latest`
 (set by `UPDATE_REPO` in `local.properties`). If the release tag is newer than the installed version,
 **Settings › App updates** downloads the attached `.apk`, checks its SHA-256 against GitHub's digest,
 and opens Android's installer.
