@@ -71,7 +71,9 @@ data class TrackerUiState(
     val watchedMovieIds: Set<Int> = emptySet(),
     /** "Build your tracker": popular shows to answer Watching / Watched / Not for me. */
     val picker: List<TitleItem> = emptyList(),
-    val pickerBusy: Boolean = false
+    val pickerBusy: Boolean = false,
+    /** Source.TVTIME / Source.BINGEBOXD -> what that import added (empty imports are omitted). */
+    val imports: Map<String, ImportCounts> = emptyMap()
 )
 
 /** Up Next = recent releases you haven't watched, then shows you're partway through. One card per show. */
@@ -98,7 +100,8 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
             val records=store.watchedRecords(30)
             val movies=store.watchedMovies()
             val movieIds=store.watchedMovieIds()
-            withContext(Dispatchers.Main) { _ui.value=_ui.value.copy(shows=list,stats=stats,watched=records,movies=movies,watchedMovieIds=movieIds,reminders=store.preference("reminders")=="1") }
+            val imports=listOf(Source.TVTIME, Source.BINGEBOXD).associateWith { store.importCounts(it) }.filterValues { !it.isEmpty }
+            withContext(Dispatchers.Main) { _ui.value=_ui.value.copy(shows=list,stats=stats,watched=records,movies=movies,watchedMovieIds=movieIds,imports=imports,reminders=store.preference("reminders")=="1") }
         }
     }
     fun selectTab(tab:String) { _ui.value=_ui.value.copy(tab=tab) }
@@ -171,6 +174,18 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
         }
     }
     fun dismissPreview() { _ui.value=_ui.value.copy(preview=null) }
+
+    /** Removes everything a TV Time or BingeBoxd import added; episodes and movies you marked yourself stay. */
+    fun removeImport(source: String) {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(loading = true)
+            withContext(Dispatchers.IO) { store.removeImport(source) }
+            _ui.value = _ui.value.copy(loading = false, chosen = null, continueWatching = emptyList(),
+                message = "Removed your ${if (source == Source.BINGEBOXD) "BingeBoxd" else "TV Time"} import")
+            refresh()
+            loadReleases(force = true)
+        }
+    }
 
     // ── Movies ──
     fun setMovieWatched(item: TitleItem, watched: Boolean) {

@@ -16,19 +16,61 @@ data class WatchedRecord(val title: String, val season: Int, val episode: Int, v
 data class WatchedMovie(val title: String, val tmdbId: Int, val poster: String?, val watchedAt: String)
 data class TrackerStats(val shows: Int, val watched: Int, val movies: Int, val streak: Int = 0)
 
-class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_tracker.db", null, 2) {
+/** Where a watched record came from. Imports can be removed per source; manual marks are always kept. */
+object Source { const val MANUAL = "manual"; const val TVTIME = "tvtime"; const val BINGEBOXD = "bingeboxd" }
+
+/** What one import added: shows that came from it, and its episode and movie records. */
+data class ImportCounts(val shows: Int, val episodes: Int, val movies: Int) { val isEmpty get() = shows + episodes + movies == 0 }
+
+class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_tracker.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE shows (title_key TEXT PRIMARY KEY,title TEXT NOT NULL,tvtime_id TEXT NOT NULL DEFAULT '',followed INTEGER NOT NULL DEFAULT 1,archived INTEGER NOT NULL DEFAULT 0,followed_at TEXT NOT NULL DEFAULT '',tmdb_id INTEGER NOT NULL DEFAULT 0,poster TEXT)")
-        db.execSQL("CREATE TABLE watched (title_key TEXT NOT NULL,season INTEGER NOT NULL,episode INTEGER NOT NULL,watched_at TEXT NOT NULL DEFAULT '',PRIMARY KEY(title_key,season,episode))")
-        db.execSQL("CREATE TABLE movies (title_key TEXT PRIMARY KEY,title TEXT NOT NULL,watched_at TEXT NOT NULL DEFAULT '',tmdb_id INTEGER NOT NULL DEFAULT 0,poster TEXT)")
+        db.execSQL("CREATE TABLE watched (title_key TEXT NOT NULL,season INTEGER NOT NULL,episode INTEGER NOT NULL,watched_at TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT 'manual',PRIMARY KEY(title_key,season,episode))")
+        db.execSQL("CREATE TABLE movies (title_key TEXT PRIMARY KEY,title TEXT NOT NULL,watched_at TEXT NOT NULL DEFAULT '',tmdb_id INTEGER NOT NULL DEFAULT 0,poster TEXT,source TEXT NOT NULL DEFAULT 'manual')")
         db.execSQL("CREATE TABLE config (key TEXT PRIMARY KEY,value TEXT NOT NULL)")
     }
-    // v2: movies gain a TMDB id and poster (Mark as watched, BingeBoxd import). Existing rows are kept.
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // v2: movies gain a TMDB id and poster (Mark as watched, BingeBoxd import). Existing rows are kept.
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE movies ADD COLUMN tmdb_id INTEGER NOT NULL DEFAULT 0")
             db.execSQL("ALTER TABLE movies ADD COLUMN poster TEXT")
         }
+        // v3: every record remembers its source so an import can be removed on its own.
+        // Existing rows: marks made in CineSays store a plain date (yyyy-MM-dd, 10 chars); imports
+        // store full timestamps. BingeBoxd shows carry a "bingeboxd:" id and its timestamps are ISO (…T…Z).
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE watched ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+            db.execSQL("ALTER TABLE movies ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+            db.execSQL("UPDATE watched SET source='bingeboxd' WHERE length(watched_at)<>10 AND title_key IN (SELECT title_key FROM shows WHERE tvtime_id LIKE 'bingeboxd:%')")
+            db.execSQL("UPDATE watched SET source='tvtime' WHERE source='manual' AND length(watched_at)<>10")
+            db.execSQL("UPDATE movies SET source='bingeboxd' WHERE watched_at LIKE '%T%Z' AND tmdb_id>0")
+            db.execSQL("UPDATE movies SET source='tvtime' WHERE source='manual' AND (length(watched_at)<>10 OR tmdb_id=0)")
+        }
+    }
+
+    /** What each import contributed, for the "Remove imported history" panel. */
+    fun importCounts(source: String): ImportCounts {
+        fun count(sql: String, vararg a: String) = readableDatabase.rawQuery(sql, a).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        val showFilter = if (source == Source.BINGEBOXD) "tvtime_id LIKE 'bingeboxd:%'" else "tvtime_id<>'' AND tvtime_id NOT LIKE 'bingeboxd:%'"
+        return ImportCounts(count("SELECT COUNT(*) FROM shows WHERE $showFilter"),
+            count("SELECT COUNT(*) FROM watched WHERE source=?", source), count("SELECT COUNT(*) FROM movies WHERE source=?", source))
+    }
+
+    /**
+     * Deletes everything one import added: its episode and movie records, and the shows it created
+     * (unless you've marked episodes of that show yourself; those shows stay, unlinked from the import).
+     */
+    fun removeImport(source: String) {
+        val db = writableDatabase
+        val showFilter = if (source == Source.BINGEBOXD) "tvtime_id LIKE 'bingeboxd:%'" else "tvtime_id<>'' AND tvtime_id NOT LIKE 'bingeboxd:%'"
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM watched WHERE source=?", arrayOf(source))
+            db.execSQL("DELETE FROM movies WHERE source=?", arrayOf(source))
+            db.execSQL("DELETE FROM shows WHERE $showFilter AND title_key NOT IN (SELECT DISTINCT title_key FROM watched)")
+            db.execSQL("UPDATE shows SET tvtime_id='' WHERE $showFilter")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
     private fun key(title: String) = title.trim().lowercase(Locale.ROOT)
 
@@ -44,10 +86,13 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
         addShow(title)
         writableDatabase.execSQL("UPDATE shows SET followed=? WHERE title_key=?", arrayOf(if(followed) 1 else 0,key(title)))
     }
-    fun mark(title: String, season: Int, episode: Int, watched: Boolean, date: String = "") {
+    fun mark(title: String, season: Int, episode: Int, watched: Boolean, date: String = "", source: String = Source.MANUAL) {
         require(season >= 0 && episode >= 0)
         addShow(title, followed = false)
-        if (watched) writableDatabase.execSQL("INSERT OR REPLACE INTO watched(title_key,season,episode,watched_at) VALUES(?,?,?,?)",arrayOf(key(title),season,episode,date))
+        // An import never overwrites an episode you marked yourself (INSERT OR IGNORE); your own marks replace.
+        if (watched) writableDatabase.execSQL(
+            (if (source == Source.MANUAL) "INSERT OR REPLACE" else "INSERT OR IGNORE") + " INTO watched(title_key,season,episode,watched_at,source) VALUES(?,?,?,?,?)",
+            arrayOf(key(title),season,episode,date,source))
         else writableDatabase.execSQL("DELETE FROM watched WHERE title_key=? AND season=? AND episode=?",arrayOf(key(title),season,episode))
     }
     fun isWatched(title: String, season: Int, episode: Int): Boolean {
@@ -56,8 +101,9 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
     fun setTmdb(title: String, id: Int, poster: String?) {
         writableDatabase.execSQL("UPDATE shows SET tmdb_id=?,poster=? WHERE title_key=?",arrayOf(id,poster,key(title)))
     }
-    fun addMovie(title: String, date: String, tmdbId: Int = 0, poster: String? = null) {
-        writableDatabase.execSQL("INSERT OR IGNORE INTO movies(title_key,title,watched_at,tmdb_id,poster) VALUES(?,?,?,?,?)",arrayOf(key(title),title,date,tmdbId,poster))
+    fun addMovie(title: String, date: String, tmdbId: Int = 0, poster: String? = null, source: String = Source.MANUAL) {
+        writableDatabase.execSQL("INSERT OR IGNORE INTO movies(title_key,title,watched_at,tmdb_id,poster,source) VALUES(?,?,?,?,?,?)",arrayOf(key(title),title,date,tmdbId,poster,source))
+        if (source == Source.MANUAL) writableDatabase.execSQL("UPDATE movies SET source='manual' WHERE title_key=?", arrayOf(key(title)))
         if (tmdbId > 0) writableDatabase.execSQL("UPDATE movies SET tmdb_id=?,poster=COALESCE(?,poster) WHERE title_key=?", arrayOf(tmdbId, poster, key(title)))
     }
     fun removeMovie(title: String, tmdbId: Int) {
@@ -92,12 +138,12 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
             while (c.moveToNext()) shows.put(org.json.JSONArray().put(c.getString(0)).put(c.getString(1)).put(c.getInt(2)).put(c.getInt(3)).put(c.getString(4)).put(c.getInt(5)).put(c.getString(6) ?: ""))
         }
         val watched = org.json.JSONArray()
-        readableDatabase.rawQuery("SELECT s.title,w.season,w.episode,w.watched_at FROM watched w JOIN shows s ON s.title_key=w.title_key", null).use { c ->
-            while (c.moveToNext()) watched.put(org.json.JSONArray().put(c.getString(0)).put(c.getInt(1)).put(c.getInt(2)).put(c.getString(3)))
+        readableDatabase.rawQuery("SELECT s.title,w.season,w.episode,w.watched_at,w.source FROM watched w JOIN shows s ON s.title_key=w.title_key", null).use { c ->
+            while (c.moveToNext()) watched.put(org.json.JSONArray().put(c.getString(0)).put(c.getInt(1)).put(c.getInt(2)).put(c.getString(3)).put(c.getString(4)))
         }
         val movies = org.json.JSONArray()
-        readableDatabase.rawQuery("SELECT title,watched_at,tmdb_id,poster FROM movies", null).use { c ->
-            while (c.moveToNext()) movies.put(org.json.JSONArray().put(c.getString(0)).put(c.getString(1)).put(c.getInt(2)).put(c.getString(3) ?: ""))
+        readableDatabase.rawQuery("SELECT title,watched_at,tmdb_id,poster,source FROM movies", null).use { c ->
+            while (c.moveToNext()) movies.put(org.json.JSONArray().put(c.getString(0)).put(c.getString(1)).put(c.getInt(2)).put(c.getString(3) ?: "").put(c.getString(4)))
         }
         return root.put("v", 1).put("shows", shows).put("watched", watched).put("movies", movies).toString()
     }
@@ -111,10 +157,11 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
                 if (r.optInt(5) > 0) db.execSQL("UPDATE shows SET tmdb_id=?,poster=NULLIF(?, '') WHERE title_key=? AND tmdb_id=0", arrayOf(r.optInt(5), r.optString(6), key(r.getString(0))))
             } }
             root.optJSONArray("watched")?.let { a -> for (i in 0 until a.length()) { val r = a.getJSONArray(i)
-                db.execSQL("INSERT OR IGNORE INTO watched(title_key,season,episode,watched_at) VALUES(?,?,?,?)", arrayOf(key(r.getString(0)), r.getInt(1), r.getInt(2), r.optString(3)))
+                db.execSQL("INSERT OR IGNORE INTO watched(title_key,season,episode,watched_at,source) VALUES(?,?,?,?,?)",
+                    arrayOf(key(r.getString(0)), r.getInt(1), r.getInt(2), r.optString(3), r.optString(4, Source.MANUAL).ifBlank { Source.MANUAL }))
             } }
             root.optJSONArray("movies")?.let { a -> for (i in 0 until a.length()) { val r = a.getJSONArray(i)
-                addMovie(r.getString(0), r.optString(1), r.optInt(2), r.optString(3).ifBlank { null })
+                addMovie(r.getString(0), r.optString(1), r.optInt(2), r.optString(3).ifBlank { null }, r.optString(4, Source.MANUAL).ifBlank { Source.MANUAL })
             } }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }

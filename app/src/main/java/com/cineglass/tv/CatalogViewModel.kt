@@ -87,7 +87,9 @@ data class ScreenState(
     val likes: Set<String> = emptySet(),
     val recommended: List<TitleItem> = emptyList(),
     /** ref -> "Because you liked X" */
-    val recommendedWhy: Map<String, String> = emptyMap()
+    val recommendedWhy: Map<String, String> = emptyMap(),
+    /** Actor page shown over Details; [personBusy] while it loads. */
+    val person: Person? = null, val personBusy: Boolean = false
 )
 
 /** Roulette moods map to TMDB genres (OR-ed) plus a rating floor. Movie genre IDs; TV is mapped. */
@@ -467,6 +469,28 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
         // select() fetches full details itself, so no extra pre-fetch is needed.
         select(TitleItem(id = id, mediaType = kind))
     }
+
+    /** Opens an actor's page: their details and every movie/show they're in, most popular first. */
+    fun openPerson(cast: CastMember) {
+        if (cast.id <= 0) return
+        _state.update { it.copy(person = Person(id = cast.id, name = cast.name, profile = cast.profile), personBusy = true) }
+        viewModelScope.launch {
+            val p = runCatching { Api.tmdb.person(cast.id, key) }.getOrNull()
+            if (_state.value.person?.id != cast.id) return@launch
+            // Talk (10767), news (10763) and reality (10764) TV are guest spots, not roles: leave them out.
+            // Order by how many people rated a title, so an actor's major work comes first.
+            val guestGenres = setOf(10767, 10763, 10764)
+            val credits = p?.credits?.cast.orEmpty()
+                .filter { it.poster != null && (it.mediaType == "movie" || it.mediaType == "tv") }
+                .filterNot { it.mediaType == "tv" && it.genreIds.orEmpty().any { g -> g in guestGenres } }
+                .filterNot { it.character.orEmpty().let { c -> c.equals("Self", true) || c.startsWith("Himself", true) || c.startsWith("Herself", true) } }
+                .groupBy { it.ref }.map { (_, roles) -> roles.first().copy(character = roles.mapNotNull { r -> r.character?.takeIf { c -> c.isNotBlank() } }.distinct().joinToString(" / ").ifBlank { null }) }
+                .sortedWith(compareByDescending<TitleItem> { it.voteCount }.thenByDescending { it.popularity })
+            _state.update { it.copy(person = (p ?: it.person)?.copy(credits = PersonCredits(credits)), personBusy = false,
+                error = if (p == null) "Couldn't load ${cast.name}'s page" else it.error) }
+        }
+    }
+    fun closePerson() { _state.update { it.copy(person = null, personBusy = false) } }
 
     fun dismiss() { detailJob?.cancel(); _state.update { it.copy(selected = null, detailBusy = false) } }
 

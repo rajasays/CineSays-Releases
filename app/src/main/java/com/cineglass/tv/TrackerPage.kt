@@ -64,6 +64,8 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
     var weekOffset by remember { mutableIntStateOf(0) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var letter by remember { mutableStateOf<Char?>(null) } // My Shows A–Z filter
+    var manageImports by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf<String?>(null) }
     BackHandler(state.chosen != null || state.tab != TRACKER_HOME_TAB) {
         if(state.chosen != null) vm.closeShow() else vm.selectTab(TRACKER_HOME_TAB)
     }
@@ -75,25 +77,63 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
     Column(Modifier.fillMaxWidth().background(Cs.bg),verticalArrangement=Arrangement.spacedBy(16.dp)){
         // Header: title, tabs and the three numbers that matter, on one line.
         // Two rows: a single row overflowed on a 960dp-wide TV and crushed the last counter.
-        Row(verticalAlignment=Alignment.CenterVertically){
-            Text("Tracker",color=Cs.text,fontSize=28.sp,fontWeight=FontWeight.ExtraBold)
-            Spacer(Modifier.weight(1f))
-            if (state.loading) Text("Updating releases…", color = Cs.textMuted, fontSize = 13.sp, modifier = Modifier.padding(end = 8.dp))
+        val narrow = LocalCompact.current
+        val numbers: @Composable () -> Unit = {
             TrackerNumber("${upNext.sumOf { it.behind }}", "to watch")
             TrackerNumber("$thisWeek", "this week")
             TrackerNumber("${state.stats.streak}", "day streak")
         }
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+        // Phones: counters go on their own line under the title instead of squeezing beside it.
+        if (narrow) {
+            Text("Tracker",color=Cs.text,fontSize=28.sp,fontWeight=FontWeight.ExtraBold)
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 0.dp), verticalAlignment = Alignment.Bottom) { numbers() }
+        } else Row(verticalAlignment=Alignment.CenterVertically){
+            Text("Tracker",color=Cs.text,fontSize=28.sp,fontWeight=FontWeight.ExtraBold)
+            Spacer(Modifier.weight(1f))
+            if (state.loading) Text("Updating releases…", color = Cs.textMuted, fontSize = 13.sp, modifier = Modifier.padding(end = 8.dp))
+            numbers()
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement=Arrangement.spacedBy(8.dp)){
             listOf(TRACKER_HOME_TAB to TRACKER_HOME_TAB, "My Shows · ${state.shows.count{it.followed}}" to "My Shows", "Movies · ${state.stats.movies}" to "Movies",
                 "+ Add shows" to "Add shows", "Calendar" to "Calendar & Releases", "Timeline" to "Release Timeline", "Reminders" to "Reminders")
                 .forEach{ (label, tab) -> CsChip(label, state.tab==tab, compact = true){ vm.selectTab(tab) } }
         }
         // One import for both services: the importer recognises a TV Time or BingeBoxd ZIP by its files.
         if (state.tab in listOf(TRACKER_HOME_TAB, "My Shows", "Movies") && state.chosen == null && state.preview == null)
-            Row(verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                CsButton("⇧ Import from TV Time or BingeBoxd") { picker.launch(arrayOf("application/zip","application/x-zip-compressed","application/octet-stream")) }
-                Text("Use the ZIP export from either app. Duplicates are skipped.", color = Cs.textMuted, fontSize = 12.sp)
+            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                CsButton(if (narrow) "⇧ Import" else "⇧ Import from TV Time or BingeBoxd") { picker.launch(arrayOf("application/zip","application/x-zip-compressed","application/octet-stream")) }
+                if (state.imports.isNotEmpty()) CsButton(if (manageImports) "Close" else "Manage imports") { manageImports = !manageImports; confirmRemove = null }
+                if (!LocalCompact.current) Text("Use the ZIP export from either app. Duplicates are skipped.", color = Cs.textMuted, fontSize = 12.sp)
             }
+        // Remove an import entirely (two presses, because it can't be undone).
+        if (manageImports && state.imports.isNotEmpty() && state.chosen == null) CsPanel(Modifier.fillMaxWidth()) {
+            Text("Imported history", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text("Removing an import deletes the shows, episodes and movies it added. Anything you marked yourself in CineSays stays.",
+                color = Cs.textSoft, fontSize = 13.sp)
+            state.imports.forEach { (source, c) ->
+                val name = if (source == Source.BINGEBOXD) "BingeBoxd" else "TV Time"
+                val info: @Composable (Modifier) -> Unit = { m ->
+                    Column(m) {
+                        Text(name, color = Cs.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text("${c.shows} shows · ${c.episodes} episodes · ${c.movies} movies", color = Cs.textMuted, fontSize = 12.sp)
+                    }
+                }
+                val actions: @Composable () -> Unit = {
+                    if (confirmRemove == source) {
+                        CsButton("Yes, remove $name", primary = true) { vm.removeImport(source); confirmRemove = null }
+                        CsButton("Cancel") { confirmRemove = null }
+                    } else CsButton("Remove $name import") { confirmRemove = source }
+                }
+                // Phones: buttons under the text, so the name and counts keep their full width.
+                if (narrow) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    info(Modifier.fillMaxWidth())
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) { actions() }
+                } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    info(Modifier.weight(1f)); actions()
+                }
+            }
+            if (confirmRemove != null) Text("This can't be undone. You could import the ZIP again later.", color = Cs.warn, fontSize = 12.sp)
+        }
         if(state.tab == "My Shows" && state.chosen == null) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically) {
                 TrackButton(if(showSearch) "Close Search" else "⌕ Search TV Shows", active=showSearch) { showSearch=!showSearch; if(!showSearch) vm.searchShows("") }
@@ -295,20 +335,27 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
     }
 }
 
+/** Height of the scrolling Continue watching / Coming soon boxes (about four cards). */
+private val UP_NEXT_BOX_HEIGHT = 440.dp
+
 /** Up Next: week strip, one card per show with one-press "Watched", and Coming soon. */
 @Composable private fun UpNextPanel(state: TrackerUiState, upNext: List<UpNextEntry>, today: LocalDate, vm: TrackerViewModel, onImport: () -> Unit) {
     val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val narrow = LocalCompact.current
+    Row(horizontalArrangement = Arrangement.spacedBy(if (narrow) 4.dp else 8.dp)) {
         (0..6).forEach { n ->
             val d = monday.plusDays(n.toLong())
             val count = state.releases.count { it.episode.airDate == d.toString() }
             val isToday = d == today
+            // Phones: tighter cells, centred, and just the release count, so nothing wraps.
             Column(Modifier.weight(1f).border(1.dp, if (isToday) Cs.accent else Cs.line, RoundedCornerShape(12.dp))
-                .background(if (isToday) Color(0xFF0A3A6E) else Cs.surface, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
+                .background(if (isToday) Color(0xFF0A3A6E) else Cs.surface, RoundedCornerShape(12.dp))
+                .padding(horizontal = if (narrow) 2.dp else 12.dp, vertical = if (narrow) 8.dp else 10.dp),
+                horizontalAlignment = if (narrow) Alignment.CenterHorizontally else Alignment.Start,
                 verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(d.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }, color = Cs.textMuted, fontSize = 12.sp)
-                Text("${d.dayOfMonth}", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(if (count == 0) "—" else "$count release${if (count > 1) "s" else ""}", color = Cs.accent, fontSize = 12.sp)
+                Text(d.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }, color = Cs.textMuted, fontSize = if (narrow) 11.sp else 12.sp, maxLines = 1)
+                Text("${d.dayOfMonth}", color = Cs.text, fontSize = if (narrow) 17.sp else 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(if (count == 0) "—" else if (narrow) "$count" else "$count release${if (count > 1) "s" else ""}", color = Cs.accent, fontSize = 12.sp, maxLines = 1)
             }
         }
     }
@@ -326,6 +373,12 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                 }
             }
             if (upNext.isNotEmpty()) Text("${upNext.size} shows: new episodes first, then shows you're partway through", color = Cs.textMuted, fontSize = 12.sp)
+            // A fixed-height box that scrolls on its own, so a long list doesn't stretch the whole page.
+            // With a remote, moving down through the cards scrolls the box; the page stays put.
+            if (upNext.isNotEmpty()) Column(Modifier.fillMaxWidth().height(UP_NEXT_BOX_HEIGHT)
+                .border(1.dp, Cs.line, RoundedCornerShape(16.dp)).background(Cs.panel, RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(16.dp)).verticalScroll(rememberScrollState()).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
             upNext.forEach { e ->
                 Row(Modifier.fillMaxWidth().border(1.dp, Cs.line, RoundedCornerShape(14.dp)).background(Cs.surface, RoundedCornerShape(14.dp)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -346,12 +399,18 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                     }
                 }
             }
+            }
         }
     }, right = { paneMod ->
         Column(paneMod, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CsSectionTitle("Coming soon")
-            val soon = state.releases.filter { r -> runCatching { LocalDate.parse(r.episode.airDate).isAfter(today) }.getOrDefault(false) }.take(6)
-            CsPanel(Modifier.fillMaxWidth()) {
+            val soon = state.releases.filter { r -> runCatching { LocalDate.parse(r.episode.airDate).isAfter(today) }.getOrDefault(false) }.take(20)
+            if (upNext.isNotEmpty() && !compact) Text("${soon.size} announced", color = Cs.textMuted, fontSize = 12.sp)
+            // Same height as Continue watching, so both columns line up.
+            Column(Modifier.fillMaxWidth().then(if (compact) Modifier.heightIn(max = UP_NEXT_BOX_HEIGHT) else Modifier.height(UP_NEXT_BOX_HEIGHT))
+                .border(1.dp, Cs.line, RoundedCornerShape(16.dp)).background(Cs.panel, RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(16.dp)).verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (soon.isEmpty()) Text("No announced episodes in the next 5 weeks.", color = Cs.textMuted, fontSize = 13.sp)
                 soon.forEach { r ->
                     val d = LocalDate.parse(r.episode.airDate)

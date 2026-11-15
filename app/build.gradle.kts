@@ -21,8 +21,8 @@ android {
         applicationId = "com.cineglass.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.3.0"
+        versionCode = 14
+        versionName = "1.3.1"
         buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "OMDB_API_KEY", "\"${omdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseApiKey}\"")

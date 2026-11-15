@@ -31,7 +31,12 @@ data class TitleItem(
     val runtime: Int? = null,
     @SerializedName("number_of_seasons") val seasons: Int? = null,
     val genres: List<Genre>? = null,
-    val tagline: String? = null
+    val tagline: String? = null,
+    val popularity: Double = 0.0,
+    @SerializedName("vote_count") val voteCount: Int = 0,
+    @SerializedName("genre_ids") val genreIds: List<Int>? = null,
+    /** Role in an actor's credits ("Walter White"). */
+    val character: String? = null
 ) {
     val label: String get() = title ?: name ?: "Untitled"
     val kind: String get() = if (mediaType == "tv" || (mediaType == null && name != null && title == null)) "tv" else "movie"
@@ -57,9 +62,19 @@ data class ProviderRegion(
 data class Provider(@SerializedName("provider_id") val id: Int, @SerializedName("provider_name") val name: String, @SerializedName("logo_path") val logo: String?)
 
 data class Credits(val cast: List<CastMember> = emptyList())
-data class CastMember(val name: String = "", val character: String? = null, @SerializedName("profile_path") val profile: String? = null) {
+data class CastMember(val id: Int = 0, val name: String = "", val character: String? = null, @SerializedName("profile_path") val profile: String? = null) {
     fun image() = profile?.let { "https://image.tmdb.org/t/p/w185$it" }
 }
+
+/** An actor's page: details plus every movie and show they appear in (TMDB combined credits). */
+data class Person(
+    val id: Int = 0, val name: String = "", val biography: String? = null, val birthday: String? = null,
+    @SerializedName("place_of_birth") val birthplace: String? = null,
+    @SerializedName("known_for_department") val knownFor: String? = null,
+    @SerializedName("profile_path") val profile: String? = null,
+    @SerializedName("combined_credits") val credits: PersonCredits? = null
+) { fun image() = profile?.let { "https://image.tmdb.org/t/p/w342$it" } }
+data class PersonCredits(val cast: List<TitleItem> = emptyList())
 
 /** One request instead of four: details + videos + providers + external IDs via append_to_response. */
 data class FullDetail(
@@ -124,6 +139,8 @@ interface TmdbApi {
     @GET("{kind}/{id}/videos") suspend fun videos(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): VideoPage
     @GET("{kind}/{id}/watch/providers") suspend fun providers(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): ProviderPage
     @GET("{kind}/{id}/external_ids") suspend fun externalIds(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): ExternalIds
+    @GET("person/{id}") suspend fun person(@Path("id") id: Int, @Query("api_key") key: String,
+        @Query("append_to_response") append: String = "combined_credits"): Person
     @GET("{kind}/{id}/recommendations") suspend fun recommendations(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): CatalogPage
     @GET("{kind}/{id}") suspend fun detail(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): TitleItem
     @GET("{kind}/{id}") suspend fun fullDetail(

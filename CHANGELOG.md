@@ -1,3 +1,10 @@
+# CineSays 1.3.1
+- Tracker › Manage imports: remove a TV Time or BingeBoxd import entirely (its shows, episodes and movies). Episodes and movies you marked yourself are kept. Every record now remembers its source; existing data is tagged on upgrade.
+- Tracker › Up Next: Continue watching sits in its own scrolling box (Coming soon matches its height), so the screen stays even however many shows you're watching.
+- Actor pages: select anyone in a title's cast to see their photo, details, bio and all their movies and shows (major roles first; talk-show and reality guest spots left out), with All / Movies / TV filters.
+- Phones: Tracker header, tabs, import buttons and week strip no longer wrap or get cut off; rating labels stay on one line.
+- Settings: "Developed by Khanpur Boys" credit.
+
 # CineSays 1.3.0
 - Phones: CineSays now installs and runs on Android phones and tablets, with stacked layouts on narrow screens.
 - Account & sync (Settings): create an account or sign in to back up your tracker, watched movies, watchlist, likes, services and regions, and keep your friends on any device. Backs up automatically when you leave the app.

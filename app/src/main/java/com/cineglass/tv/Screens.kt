@@ -159,7 +159,8 @@ private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit
 fun DetailsScreen(
     item: TitleItem, state: ScreenState, myProviders: Set<Int>, inTracker: Boolean, backFocus: FocusRequester, context: Context,
     onBack: () -> Unit, onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onOpenSimilar: (TitleItem) -> Unit,
-    liked: Boolean = false, onLike: () -> Unit = {}, movieWatched: Boolean = false, onMovieWatched: (Boolean) -> Unit = {}
+    liked: Boolean = false, onLike: () -> Unit = {}, movieWatched: Boolean = false, onMovieWatched: (Boolean) -> Unit = {},
+    onPerson: (CastMember) -> Unit = {}
 ) {
     val compact = LocalCompact.current
     val regions = state.regions.sorted()
@@ -186,12 +187,7 @@ fun DetailsScreen(
             if (state.cast.isNotEmpty()) {
                 Text("Cast", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    state.cast.forEach { c ->
-                        Column(Modifier.width(80.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AsyncImage(c.image(), c.name, Modifier.size(64.dp).clip(CircleShape).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
-                            Text(c.name, color = Cs.textSoft, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+                    state.cast.forEach { c -> CastCard(c) { onPerson(c) } }
                 }
             }
         }
@@ -215,7 +211,7 @@ fun DetailsScreen(
                         item.runtime?.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
                         item.genres?.takeIf { it.isNotEmpty() }?.take(3)?.joinToString(", ") { it.name })
                     Text(meta.joinToString("    "), color = Cs.accent, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         RatingTile("TMDB", if (item.rating > 0) "%.1f".format(item.rating) else "—")
                         RatingTile("IMDb", state.imdbRating ?: "—")
                         RatingTile("Rotten Tomatoes", state.rottenTomatoes ?: "—")
@@ -230,6 +226,59 @@ fun DetailsScreen(
             if (state.similar.isNotEmpty()) CsPosterRow("More like this", state.similar, onClick = onOpenSimilar)
             Text("Availability from TMDB / JustWatch. Provider buttons launch installed apps; exact-title links need verified content IDs.", color = Cs.textMuted, fontSize = 12.sp)
         }
+    }
+}
+
+/** A cast photo + name; selecting it opens the actor's page. */
+@Composable
+private fun CastCard(c: CastMember, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Column(Modifier.width(84.dp).onFocusChanged { focused = it.isFocused }.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        AsyncImage(c.image(), c.name, Modifier.size(64.dp).border(if (focused) 3.dp else 0.dp, if (focused) Cs.focusRing else Color.Transparent, CircleShape)
+            .clip(CircleShape).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
+        Text(c.name, color = if (focused) Cs.text else Cs.textSoft, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        c.character?.takeIf { it.isNotBlank() }?.let { Text(it, color = Cs.textMuted, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    }
+}
+
+// ───────────────────────────── Actor page ─────────────────────────────
+
+/** An actor's page: photo, details, short bio and all their movies and shows (All / Movies / TV). */
+@Composable
+fun PersonScreen(person: Person, busy: Boolean, firstFocus: FocusRequester, onBack: () -> Unit, onOpen: (TitleItem) -> Unit) {
+    val compact = LocalCompact.current
+    var filter by remember(person.id) { mutableStateOf("all") }
+    var bioOpen by remember(person.id) { mutableStateOf(false) }
+    val all = person.credits?.cast.orEmpty()
+    val shown = all.filter { filter == "all" || it.kind == filter }
+    Column(Modifier.fillMaxSize().background(Cs.bg).safeDrawingPadding().verticalScroll(rememberScrollState())
+        .padding(horizontal = if (compact) 16.dp else 56.dp, vertical = if (compact) 16.dp else 32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 16.dp else 32.dp)) {
+            AsyncImage(person.image(), person.name, Modifier.width(if (compact) 110.dp else 180.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(16.dp))
+                .background(Cs.surfaceHigh).border(1.dp, Cs.lineStrong, RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                CsChip("← Back", false, Modifier.focusRequester(firstFocus)) { onBack() }
+                Text(person.name, color = Cs.text, fontSize = if (compact) 26.sp else 40.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 30.sp else 44.sp)
+                Text(listOfNotNull(person.knownFor, person.birthday?.let { b ->
+                        runCatching { val d = java.time.LocalDate.parse(b); "Born ${d.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy"))}" }.getOrNull() },
+                        person.birthplace).joinToString("  ·  "), color = Cs.accent, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                person.biography?.takeIf { it.isNotBlank() }?.let { bio ->
+                    Text(bio, color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = if (bioOpen) 40 else 4, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 820.dp))
+                    if (bio.length > 280) CsChip(if (bioOpen) "Less" else "Read more", false, compact = true) { bioOpen = !bioOpen }
+                }
+            }
+        }
+        if (compact) CsSectionTitle("Movies & shows")
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!compact) CsSectionTitle("Movies & shows", Modifier.padding(end = 8.dp))
+            listOf("All · ${all.size}" to "all", "Movies · ${all.count { it.kind == "movie" }}" to "movie", "TV · ${all.count { it.kind == "tv" }}" to "tv")
+                .forEach { (label, value) -> CsChip(label, filter == value, compact = true) { filter = value } }
+        }
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cs.accent)
+        else if (shown.isEmpty()) Text("No titles to show.", color = Cs.textMuted)
+        CsPosterGrid(shown, posterWidth = if (compact) 104.dp else 128.dp, onClick = onOpen)
     }
 }
 
@@ -252,7 +301,7 @@ private fun DetailActions(
 @Composable
 private fun RatingTile(source: String, value: String) {
     Column(Modifier.background(Cs.surface, RoundedCornerShape(12.dp)).border(1.dp, Cs.line, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-        Text(source, color = Cs.textMuted, fontSize = 12.sp)
+        Text(source, color = Cs.textMuted, fontSize = 12.sp, maxLines = 1, softWrap = false)
         Text(value, color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
     }
 }

@@ -263,7 +263,18 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     onBack = vm::dismiss, onToggleWatchlist = { vm.toggle(item) }, onTrack = { tracker.followTmdb(item) },
                     onRecommend = { recommendingItem = item }, onOpenSimilar = vm::select,
                     liked = item.ref in state.likes, onLike = { vm.toggleLike(item) },
-                    movieWatched = item.id in trackerUi.watchedMovieIds, onMovieWatched = { tracker.setMovieWatched(item, it) })
+                    movieWatched = item.id in trackerUi.watchedMovieIds, onMovieWatched = { tracker.setMovieWatched(item, it) },
+                    onPerson = vm::openPerson)
+            }
+        }
+    }
+    // Actor page: its own window over Details. Back returns to Details; a title opens its details.
+    state.person?.let { person ->
+        Dialog(onDismissRequest = vm::closePerson, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            val personFocus = remember { FocusRequester() }
+            LaunchedEffect(person.id) { delay(60); runCatching { personFocus.requestFocus() } }
+            CompositionLocalProvider(LocalCompact provides (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 700)) {
+                PersonScreen(person, state.personBusy, personFocus, onBack = vm::closePerson) { title -> vm.closePerson(); vm.select(title) }
             }
         }
     }
@@ -290,6 +301,19 @@ private fun SettingsScreen(
         }
     }
     CsPanel(Modifier.fillMaxWidth()) { AppUpdatesSection(updateState, updater) }
+    AboutCredit(updateState.currentVersion)
+}
+
+/** "Developed by" credit at the end of Settings. */
+@Composable
+private fun AboutCredit(version: String) {
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Three technologists side by side: friends sitting together with their laptops.
+        Text("🧑‍💻👨‍💻🧑‍💻", fontSize = 40.sp)
+        Text("Developed by Khanpur Boys", color = Cs.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text("CineSays $version", color = Cs.textMuted, fontSize = 13.sp)
+    }
 }
 
 /**

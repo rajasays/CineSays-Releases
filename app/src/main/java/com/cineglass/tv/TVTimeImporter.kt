@@ -135,8 +135,8 @@ class TVTimeImporter(private val context: Context) {
         db.beginTransaction()
         try {
             shows.values.forEach { store.addShow(it.title,it.id,it.followed,it.archived,it.followedAt) }
-            episodes.values.forEach { store.mark(it.title,it.season,it.episode,true,it.watchedAt) }
-            movies.values.forEach { store.addMovie(it.title,it.watchedAt) }
+            episodes.values.forEach { store.mark(it.title,it.season,it.episode,true,it.watchedAt,Source.TVTIME) }
+            movies.values.forEach { store.addMovie(it.title,it.watchedAt,source=Source.TVTIME) }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
         return TrackerImportPreview(shows.size,episodes.size,movies.size,detectedFormat,warnings.toList())
@@ -175,13 +175,13 @@ class TVTimeImporter(private val context: Context) {
             }
             for((showId,se,at) in bbEpisodes.values) {
                 val title=showInfo[showId]?.first ?: continue
-                db.execSQL("INSERT OR IGNORE INTO watched(title_key,season,episode,watched_at) VALUES(?,?,?,?)",
+                db.execSQL("INSERT OR IGNORE INTO watched(title_key,season,episode,watched_at,source) VALUES(?,?,?,?,'bingeboxd')",
                     arrayOf(title.trim().lowercase(java.util.Locale.ROOT),se.first,se.second,at))
                 importedEps++
             }
             for((id,at) in bbMovies) {
                 val (title,poster)=movieInfo[id] ?: continue
-                store.addMovie(title,at,id,poster); importedMovies++
+                store.addMovie(title,at,id,poster,Source.BINGEBOXD); importedMovies++
             }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
