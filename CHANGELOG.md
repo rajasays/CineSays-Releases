@@ -1,3 +1,13 @@
+# CineSays 1.3.0
+- Phones: CineSays now installs and runs on Android phones and tablets, with stacked layouts on narrow screens.
+- Account & sync (Settings): create an account or sign in to back up your tracker, watched movies, watchlist, likes, services and regions, and keep your friends on any device. Backs up automatically when you leave the app.
+- Import from BingeBoxd (as well as TV Time): shows, episodes and movies, matched exactly by TMDB id.
+- Tracker: A–Z jump in My Shows; Continue watching now includes every show you're partway through (not just recent releases); new Movies tab; new "Add shows" tab to build your tracker without an import (Watching / Watched it / Skip).
+- Movies: "Mark watched" on any movie.
+- Home: "Recommended for you", based on what you like (new ♥ Like button), your watchlist and what you watch. Up next cards now open the series in Tracker; a separate ✓ button marks the episode watched.
+- Remote navigation: Back first jumps to the tab bar, then Home.
+- Fixed: a show's "furthest episode" mixed seasons up (e.g. S2E10 + S3E1 read as S3E10).
+
 # CineSays 1.2.0 — redesign
 - New look across the app: top tab bar (Home, Discover, Tracker, Watchlist, Roulette, Friends) replaces the 11-item sidebar.
 - Home: rotating hero, 'Up next from your Tracker' row, 'New on your services' first.

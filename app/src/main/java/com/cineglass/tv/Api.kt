@@ -106,6 +106,7 @@ data class TrackerTvDetails(
     val id: Int = 0,
     val name: String = "",
     @SerializedName("number_of_episodes") val episodeCount: Int = 0,
+    @SerializedName("number_of_seasons") val seasons: Int = 0,
     @SerializedName("next_episode_to_air") val next: TrackerEpisode? = null,
     @SerializedName("last_episode_to_air") val last: TrackerEpisode? = null,
     @SerializedName("poster_path") val poster: String? = null
@@ -123,6 +124,7 @@ interface TmdbApi {
     @GET("{kind}/{id}/videos") suspend fun videos(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): VideoPage
     @GET("{kind}/{id}/watch/providers") suspend fun providers(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): ProviderPage
     @GET("{kind}/{id}/external_ids") suspend fun externalIds(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): ExternalIds
+    @GET("{kind}/{id}/recommendations") suspend fun recommendations(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): CatalogPage
     @GET("{kind}/{id}") suspend fun detail(@Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String): TitleItem
     @GET("{kind}/{id}") suspend fun fullDetail(
         @Path("kind") kind: String, @Path("id") id: Int, @Query("api_key") key: String,

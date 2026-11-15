@@ -36,6 +36,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.border
+import androidx.compose.ui.focus.onFocusChanged
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,6 +71,12 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     var lastBack by remember { mutableLongStateOf(0L) }
     var recommendingItem by remember { mutableStateOf<TitleItem?>(null) }
     val homeTabFocus = remember { FocusRequester() }
+    // One focus target per top-bar item, so Back can return focus to the current tab first.
+    val tabFocus = remember { (TABS + listOf("Search", "Settings")).associateWith { FocusRequester() } }
+    var tabBarFocused by remember { mutableStateOf(false) }
+    val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
+    val scope = rememberCoroutineScope()
+    val socialState by social.state.collectAsState()
     val heroFocus = remember { FocusRequester() }
     val onboardingFocus = remember { FocusRequester() }
     var focusHomeOnReturn by remember { mutableStateOf(false) }
@@ -82,8 +91,36 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     var rouletteLength by remember { mutableStateOf("any") }
     var rouletteSource by remember { mutableStateOf("mine") }
 
-    val upNext = remember(trackerUi.releases) { upNextFrom(trackerUi.releases) }
+    val upNext = remember(trackerUi.releases, trackerUi.continueWatching) { mergeUpNext(upNextFrom(trackerUi.releases), trackerUi.continueWatching) }
     val myProviders = remember(state.myServices) { vm.myProviderIds(state.myServices) }
+
+    // Recommended for you: recent tracker activity as seeds, and never suggest what you've already tracked or watched.
+    LaunchedEffect(state.likes, state.watchlist, trackerUi.shows.size, trackerUi.movies.size, state.sections.isNotEmpty()) {
+        if (!state.sections.isNotEmpty()) return@LaunchedEffect
+        val seeds = trackerUi.shows.filter { it.tmdbId > 0 && it.watchedCount > 0 }.sortedByDescending { it.lastWatchedAt }.take(5).map { "tv:${it.tmdbId}" } +
+            trackerUi.movies.filter { it.tmdbId > 0 }.take(3).map { "movie:${it.tmdbId}" }
+        val exclude = trackerUi.shows.filter { it.tmdbId > 0 }.map { "tv:${it.tmdbId}" }.toSet() + trackerUi.watchedMovieIds.map { "movie:$it" }
+        vm.loadRecommendations(seeds, exclude)
+    }
+
+    // Cloud backup: everything that should follow you to another device.
+    suspend fun backupJson(): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        org.json.JSONObject().put("v", 1).put("tracker", org.json.JSONObject(tracker.exportData())).put("prefs", org.json.JSONObject(vm.exportPrefs())).toString()
+    }
+    suspend fun restoreJson(json: String) {
+        val o = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return
+        o.optJSONObject("prefs")?.let { vm.importPrefs(it.toString()) }
+        o.optJSONObject("tracker")?.let { tracker.importData(it.toString()) }
+    }
+    // Back up automatically when the app goes to the background (signed-in accounts only, at most every 10 min).
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, socialState.email) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP && socialState.email != null && System.currentTimeMillis() - socialState.lastBackupAt > 10 * 60_000L)
+                scope.launch { social.uploadBackup(backupJson()) }
+        }
+        lifecycle.addObserver(obs); onDispose { lifecycle.removeObserver(obs) }
+    }
 
     LaunchedEffect(Unit) { tracker.loadReleases() } // feeds Home's "Up next" row (cached 30 min)
     LaunchedEffect(tab, focusHomeOnReturn) {
@@ -104,13 +141,19 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     // First run: pick services before anything else.
     if (state.onboarded == false) {
         BackHandler { vm.finishOnboarding() }
-        ServicesOnboarding(state, onboardingFocus, vm::toggleService, vm::toggleRegion) { vm.finishOnboarding() }
+        CompositionLocalProvider(LocalCompact provides (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 700)) {
+            ServicesOnboarding(state, onboardingFocus, vm::toggleService, vm::toggleRegion) { vm.finishOnboarding() }
+        }
         return
     }
 
     // One root handler; Tracker registers its own later handler for its sub-tabs, which wins while enabled.
+    // With a remote: Back first lifts focus from the page to its tab in the top bar, then goes Home.
+    // With touch (phones) there's no focus to lift, so Back goes straight Home.
     BackHandler(state.selected == null && recommendingItem == null) {
-        if (tab != "Home") { tab = "Home"; focusHomeOnReturn = true }
+        val remote = inputMode.inputMode != androidx.compose.ui.input.InputMode.Touch
+        if (remote && !tabBarFocused) { runCatching { tabFocus[tab]?.requestFocus() } }
+        else if (tab != "Home") { tab = "Home"; focusHomeOnReturn = true }
         else {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - lastBack < 2200L) { showExit = true; lastBack = 0L }
@@ -123,19 +166,26 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         confirmButton = { TextButton(onClick = { showExit = false; (ctx as? android.app.Activity)?.finish() }) { Text("Exit") } },
         dismissButton = { TextButton(onClick = { showExit = false }) { Text("Cancel") } })
 
-    Column(Modifier.fillMaxSize().background(Cs.bg)) {
-        // ── Top tab bar ──
-        Row(Modifier.fillMaxWidth().padding(start = 48.dp, end = 48.dp, top = 18.dp, bottom = 6.dp),
+    BoxWithConstraints(Modifier.fillMaxSize().background(Cs.bg).safeDrawingPadding()) { // keep clear of phone status/navigation bars (Android 15 is edge-to-edge)
+    // Phones and narrow windows get stacked layouts and tighter padding.
+    val compact = maxWidth < 700.dp
+    val sidePad = if (compact) 16.dp else 48.dp
+    CompositionLocalProvider(LocalCompact provides compact) {
+    Column(Modifier.fillMaxSize()) {
+        // ── Top tab bar (scrolls sideways on phones) ──
+        Row(Modifier.fillMaxWidth().onFocusChanged { tabBarFocused = it.hasFocus }
+            .then(if (compact) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
+            .padding(start = sidePad, end = sidePad, top = if (compact) 10.dp else 18.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Image(painterResource(R.drawable.brand_logo), "CineSays", Modifier.height(28.dp).widthIn(max = 124.dp), contentScale = ContentScale.Fit)
+            Image(painterResource(R.drawable.brand_logo), "CineSays", Modifier.height(if (compact) 22.dp else 28.dp).widthIn(max = if (compact) 96.dp else 124.dp), contentScale = ContentScale.Fit)
             Spacer(Modifier.width(10.dp))
             TABS.forEach { name ->
-                CsChip(name, tab == name, if (name == "Home") Modifier.focusRequester(homeTabFocus) else Modifier, compact = true) { tab = name }
+                CsChip(name, tab == name, Modifier.focusRequester(tabFocus.getValue(name)).then(if (name == "Home") Modifier.focusRequester(homeTabFocus) else Modifier), compact = true) { tab = name }
             }
-            Spacer(Modifier.weight(1f))
+            if (!compact) Spacer(Modifier.weight(1f))
             updateState.available?.let { u -> CsChip("⇩ ${u.version}", false, compact = true) { tab = "Settings" } }
-            CsChip("⌕", tab == "Search", compact = true) { tab = "Search" }
-            CsChip("⚙ ${state.regions.sorted().joinToString("·")}", tab == "Settings", compact = true) { tab = "Settings" }
+            CsChip("⌕", tab == "Search", Modifier.focusRequester(tabFocus.getValue("Search")), compact = true) { tab = "Search" }
+            CsChip("⚙ ${state.regions.sorted().joinToString("·")}", tab == "Settings", Modifier.focusRequester(tabFocus.getValue("Settings")), compact = true) { tab = "Settings" }
         }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp), color = Cs.accent, trackColor = Cs.bg)
 
@@ -143,17 +193,20 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         // Start each screen (and each new Roulette result) at the top instead of inheriting the old scroll.
         val contentScroll = rememberScrollState()
         LaunchedEffect(tab, state.roulettePick?.ref) { contentScroll.scrollTo(0) }
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(contentScroll).padding(start = 48.dp, end = 48.dp, top = 14.dp, bottom = 28.dp),
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(contentScroll).padding(start = sidePad, end = sidePad, top = 14.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)) {
             state.error?.let { Text(it, color = Color(0xFFFFB0A0)) }
             when (tab) {
                 "Home" -> HomeScreen(state, upNext, heroFocus, openDetails = vm::select, toggleWatchlist = vm::toggle,
                     openTracker = { tab = "Tracker" }, openServices = { tab = "Settings" },
-                    markWatched = { e -> tracker.mark(e.show, e.episode.season, e.episode.number, true) })
+                    markWatched = { e -> tracker.mark(e.show, e.episode.season, e.episode.number, true) },
+                    // Up next card → that series in Tracker (season and episodes), not "mark watched".
+                    openShow = { e -> tab = "Tracker"; tracker.selectTab(TRACKER_HOME_TAB)
+                        trackerUi.shows.firstOrNull { it.title == e.show }?.let(tracker::selectShow) })
                 "Discover" -> DiscoverScreen(state, browseKind, browseGenre, browseProvider, browseSort,
                     onKind = { browseKind = it }, onGenre = { browseGenre = it }, onProvider = { browseProvider = it }, onSort = { browseSort = it },
                     onSelect = vm::select)
-                "Tracker" -> CineTrackerPage(tracker)
+                "Tracker" -> CineTrackerPage(tracker) { kind, id -> vm.selectById(kind, id) }
                 "Watchlist" -> {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("Watchlist", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
@@ -178,10 +231,17 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     if (!state.searching && query.isNotBlank() && state.results.isEmpty()) Text("No movies or series match \"$query\".", color = Cs.textSoft)
                     CsPosterGrid(state.results, onClick = vm::select)
                 }
-                "Settings" -> SettingsScreen(state, updateState, updater, vm)
+                "Settings" -> SettingsScreen(state, updateState, updater, vm, socialState,
+                    onCreateAccount = { email, pw -> scope.launch { social.createAccount(email, pw, backupJson()) } },
+                    onSignIn = { email, pw -> scope.launch { social.signIn(email, pw)?.let { restoreJson(it) } } },
+                    onBackupNow = { scope.launch { if (social.uploadBackup(backupJson())) Toast.makeText(ctx, "Backed up", Toast.LENGTH_SHORT).show() } },
+                    onRestoreNow = { scope.launch { social.downloadBackup()?.let { restoreJson(it); Toast.makeText(ctx, "Restored from your backup", Toast.LENGTH_SHORT).show() } } },
+                    onResetPassword = { email -> scope.launch { social.sendPasswordReset(email) } })
             }
             Text("Movie and TV data provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.", color = Cs.textMuted, fontSize = 12.sp)
         }
+    }
+    }
     }
 
     recommendingItem?.let { movie ->
@@ -196,17 +256,27 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         Dialog(onDismissRequest = vm::dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             val backFocus = remember { FocusRequester() }
             LaunchedEffect(item.id, item.kind) { delay(60); runCatching { backFocus.requestFocus() } }
-            DetailsScreen(item, state, myProviders,
-                inTracker = trackerUi.shows.any { it.tmdbId == item.id && it.followed }, backFocus = backFocus, context = ctx,
-                onBack = vm::dismiss, onToggleWatchlist = { vm.toggle(item) }, onTrack = { tracker.followTmdb(item) },
-                onRecommend = { recommendingItem = item }, onOpenSimilar = vm::select)
+            // The dialog is its own window: provide the phone/TV layout flag to it too.
+            CompositionLocalProvider(LocalCompact provides (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 700)) {
+                DetailsScreen(item, state, myProviders,
+                    inTracker = trackerUi.shows.any { it.tmdbId == item.id && it.followed }, backFocus = backFocus, context = ctx,
+                    onBack = vm::dismiss, onToggleWatchlist = { vm.toggle(item) }, onTrack = { tracker.followTmdb(item) },
+                    onRecommend = { recommendingItem = item }, onOpenSimilar = vm::select,
+                    liked = item.ref in state.likes, onLike = { vm.toggleLike(item) },
+                    movieWatched = item.id in trackerUi.watchedMovieIds, onMovieWatched = { tracker.setMovieWatched(item, it) })
+            }
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(state: ScreenState, updateState: UpdateState, updater: UpdateViewModel, vm: CatalogViewModel) {
+private fun SettingsScreen(
+    state: ScreenState, updateState: UpdateState, updater: UpdateViewModel, vm: CatalogViewModel, social: SocialState,
+    onCreateAccount: (String, String) -> Unit, onSignIn: (String, String) -> Unit, onBackupNow: () -> Unit, onRestoreNow: () -> Unit,
+    onResetPassword: (String) -> Unit
+) {
     Text("Settings", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+    CsPanel(Modifier.fillMaxWidth()) { AccountSection(social, onCreateAccount, onSignIn, onBackupNow, onRestoreNow, onResetPassword) }
     CsPanel(Modifier.fillMaxWidth()) {
         Text("My Services", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("Services you use are listed first, power Home's \"New on your services\" row, and the ★ My services filter in Discover and Roulette.", color = Cs.textSoft, fontSize = 14.sp)
@@ -220,6 +290,59 @@ private fun SettingsScreen(state: ScreenState, updateState: UpdateState, updater
         }
     }
     CsPanel(Modifier.fillMaxWidth()) { AppUpdatesSection(updateState, updater) }
+}
+
+/**
+ * Account & sync: link this device's identity to an email account (keeps friends), and back up /
+ * restore tracker history, watched movies, watchlist, likes, services and regions.
+ */
+@Composable
+private fun AccountSection(
+    s: SocialState, onCreateAccount: (String, String) -> Unit, onSignIn: (String, String) -> Unit,
+    onBackupNow: () -> Unit, onRestoreNow: () -> Unit, onResetPassword: (String) -> Unit
+) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    Text("Account & sync", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    if (!s.enabled) { Text(s.message.ifBlank { "Connecting…" }, color = Cs.textMuted, fontSize = 14.sp); return }
+    if (s.email != null) {
+        Text("Signed in as ${s.email}. Your tracker, watched movies, watchlist, likes, services and friends follow you to any device you sign in on.",
+            color = Cs.textSoft, fontSize = 14.sp)
+        Text(if (s.lastBackupAt > 0) "Last backup: ${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(s.lastBackupAt))} (backs up automatically when you leave the app)"
+            else "No backup yet.", color = Cs.textMuted, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CsButton("Back up now", primary = true, enabled = !s.accountBusy) { onBackupNow() }
+            CsButton("Restore from backup", enabled = !s.accountBusy) { onRestoreNow() }
+        }
+    } else {
+        Text("Right now your data and friends live only on this device. Create an account to back them up and keep them when you use CineSays on another TV or phone. Already have one? Sign in.",
+            color = Cs.textSoft, fontSize = 14.sp)
+        CsTextField(email, "Email", Modifier.widthIn(max = 520.dp).fillMaxWidth()) { email = it.trim() }
+        CsPasswordField(password, "Password (6+ characters)", Modifier.widthIn(max = 520.dp).fillMaxWidth()) { password = it }
+        val ready = email.contains("@") && password.length >= 6 && !s.accountBusy
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CsButton("Create account", primary = true, enabled = ready) { onCreateAccount(email, password); password = "" }
+            CsButton("Sign in", enabled = ready) { onSignIn(email, password); password = "" }
+            CsButton("Forgot password", enabled = email.contains("@") && !s.accountBusy) { onResetPassword(email) }
+        }
+        Text("Create account keeps this device's friend code and friends. Sign in switches this device to your existing account and merges its data with this device's.",
+            color = Cs.textMuted, fontSize = 12.sp)
+    }
+    if (s.accountBusy) LinearProgressIndicator(Modifier.widthIn(max = 520.dp).fillMaxWidth(), color = Cs.accent)
+    if (s.accountMessage.isNotBlank()) Text(s.accountMessage, color = Cs.warn, fontSize = 14.sp)
+}
+
+@Composable
+private fun CsPasswordField(value: String, hint: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+    BasicTextField(value, onChange, modifier.onFocusChanged { focused = it.isFocused }
+        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.lineStrong, shape)
+        .background(Cs.surfaceHigh, shape).padding(horizontal = 14.dp, vertical = 12.dp), singleLine = true,
+        textStyle = TextStyle(color = Cs.text, fontSize = 17.sp),
+        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password),
+        decorationBox = { inner -> Box { if (value.isEmpty()) Text(hint, color = Cs.textMuted, fontSize = 16.sp); inner() } })
 }
 
 @Composable
@@ -256,7 +379,7 @@ fun openProviderApp(context: Context, provider: Provider, title: String) {
         9, 119 -> listOf("com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient")
         350, 2 -> listOf("com.apple.atve.androidtv.appletv")
         1899, 384 -> listOf("com.wbd.stream", "com.hbo.hbonow")
-        192, 3, 235, 188 -> listOf("com.google.android.youtube.tv")
+        192, 3, 235, 188 -> listOf("com.google.android.youtube.tv", "com.google.android.youtube")
         337 -> listOf("com.disney.disneyplus")
         73 -> listOf("com.tubitv")
         300 -> listOf("tv.pluto.android")

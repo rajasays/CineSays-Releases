@@ -64,8 +64,21 @@ data class TrackerUiState(
     val loading: Boolean = false,
     val reminders: Boolean = false,
     val tab: String = TRACKER_HOME_TAB,
-    val matchStatus: String = ""
+    val matchStatus: String = "",
+    /** In-progress shows outside the release window: next unwatched episode per show. */
+    val continueWatching: List<UpNextEntry> = emptyList(),
+    val movies: List<WatchedMovie> = emptyList(),
+    val watchedMovieIds: Set<Int> = emptySet(),
+    /** "Build your tracker": popular shows to answer Watching / Watched / Not for me. */
+    val picker: List<TitleItem> = emptyList(),
+    val pickerBusy: Boolean = false
 )
+
+/** Up Next = recent releases you haven't watched, then shows you're partway through. One card per show. */
+fun mergeUpNext(fromReleases: List<UpNextEntry>, continuing: List<UpNextEntry>): List<UpNextEntry> {
+    val seen = fromReleases.map { it.show }.toMutableSet()
+    return fromReleases + continuing.filter { seen.add(it.show) }
+}
 class TrackerViewModel(app: Application): AndroidViewModel(app) {
     private val store = TrackerStore(app.applicationContext)
     private val importer = TVTimeImporter(app.applicationContext)
@@ -83,7 +96,9 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
             val list=store.allShows()
             val stats=store.stats()
             val records=store.watchedRecords(30)
-            withContext(Dispatchers.Main) { _ui.value=_ui.value.copy(shows=list,stats=stats,watched=records,reminders=store.preference("reminders")=="1") }
+            val movies=store.watchedMovies()
+            val movieIds=store.watchedMovieIds()
+            withContext(Dispatchers.Main) { _ui.value=_ui.value.copy(shows=list,stats=stats,watched=records,movies=movies,watchedMovieIds=movieIds,reminders=store.preference("reminders")=="1") }
         }
     }
     fun selectTab(tab:String) { _ui.value=_ui.value.copy(tab=tab) }
@@ -146,13 +161,80 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value=_ui.value.copy(loading=true)
             try {
-                val result=withContext(Dispatchers.IO) { importer.commit(store) }
-                _ui.value=_ui.value.copy(preview=null,loading=false,message="Imported ${result.shows} shows, ${result.watchedEpisodes} watched episodes and ${result.watchedMovies} movies")
+                val result=withContext(Dispatchers.IO) { importer.commit(store) { p -> _ui.value=_ui.value.copy(matchStatus=p) } }
+                _ui.value=_ui.value.copy(preview=null,loading=false,matchStatus="",
+                    message="Imported ${result.shows} shows, ${result.watchedEpisodes} watched episodes and ${result.watchedMovies} movies" +
+                        result.warnings.joinToString("") { ". $it" })
                 refresh()
-            } catch(e:Exception) { _ui.value=_ui.value.copy(loading=false,message="Import failed: ${e.message}") }
+                loadReleases(force = true)
+            } catch(e:Exception) { _ui.value=_ui.value.copy(loading=false,matchStatus="",message="Import failed: ${e.message}") }
         }
     }
     fun dismissPreview() { _ui.value=_ui.value.copy(preview=null) }
+
+    // ── Movies ──
+    fun setMovieWatched(item: TitleItem, watched: Boolean) {
+        if (item.kind != "movie") return
+        viewModelScope.launch(Dispatchers.IO) {
+            if (watched) store.addMovie(item.label, LocalDate.now().toString(), item.id, item.poster) else store.removeMovie(item.label, item.id)
+            withContext(Dispatchers.Main) { refresh(); _ui.value = _ui.value.copy(message = if (watched) "Marked ${item.label} as watched" else "Removed ${item.label} from watched movies") }
+        }
+    }
+
+    // ── Build your tracker (no import needed) ──
+    private var pickerPage = 0
+    private val pickerSkipped get() = store.preference("picker_skipped").orEmpty().split(",").mapNotNull { it.toIntOrNull() }.toSet()
+    /** Loads popular series not already in the tracker or skipped before. */
+    fun loadPicker(more: Boolean = false) {
+        if (key.isBlank() || _ui.value.pickerBusy) return
+        if (!more && _ui.value.picker.isNotEmpty()) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(pickerBusy = true)
+            val known = _ui.value.shows.map { it.tmdbId }.toSet() + pickerSkipped
+            val found = mutableListOf<TitleItem>()
+            var attempts = 0
+            while (found.size < 12 && attempts < 4) {
+                pickerPage++; attempts++
+                val page = runCatching { withContext(Dispatchers.IO) { Api.tmdb.discover("tv", key, "US", sort = "popularity.desc", page = pickerPage,
+                    extra = mapOf("vote_count.gte" to "200")) } }.getOrNull()?.results.orEmpty()
+                found += page.map { it.copy(mediaType = "tv") }.filter { it.poster != null && it.id !in known && found.none { f -> f.id == it.id } }
+            }
+            _ui.value = _ui.value.copy(picker = (if (more) _ui.value.picker else emptyList()) + found, pickerBusy = false)
+        }
+    }
+    private fun dropFromPicker(id: Int) {
+        _ui.value = _ui.value.copy(picker = _ui.value.picker.filterNot { it.id == id })
+        if (_ui.value.picker.size < 4) loadPicker(more = true)
+    }
+    /** answer: "watching" (follow), "watched" (follow, archive, mark every aired episode), "skip". */
+    fun answerPicker(item: TitleItem, answer: String) {
+        dropFromPicker(item.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            when (answer) {
+                "watching" -> store.followTmdb(item)
+                "watched" -> {
+                    store.followTmdb(item)
+                    store.setArchived(item.label, true)
+                    val tv = runCatching { Api.tmdb.trackerTv(item.id, key) }.getOrNull()
+                    val today = LocalDate.now()
+                    for (s in 1..(tv?.seasons ?: 0)) {
+                        val eps = runCatching { Api.tmdb.trackerSeason(item.id, s, key).episodes }.getOrNull().orEmpty()
+                            .filter { e -> e.airDate?.let { runCatching { !LocalDate.parse(it).isAfter(today) }.getOrDefault(false) } ?: false }
+                        store.markBatch(item.label, eps, true)
+                    }
+                }
+                else -> store.setPreference("picker_skipped", (pickerSkipped + item.id).joinToString(","))
+            }
+            withContext(Dispatchers.Main) {
+                refresh()
+                if (answer != "skip") { loadReleases(force = true); _ui.value = _ui.value.copy(message = if (answer == "watched") "Marked ${item.label} as watched" else "Following ${item.label}") }
+            }
+        }
+    }
+
+    // ── Backup / restore (Account sync) ──
+    fun exportData(): String = store.exportJson()
+    suspend fun importData(json: String) { withContext(Dispatchers.IO) { store.importJson(json) }; refresh(); loadReleases(force = true) }
     fun addShow(title:String) {
         if(title.isBlank())return
         viewModelScope.launch(Dispatchers.IO) { store.setFollowed(title,true);withContext(Dispatchers.Main){refresh()} }
@@ -168,7 +250,8 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
                 // Update the tile and release flags in place; no need to re-download the season.
                 if(_ui.value.chosen?.title==title) _ui.value=_ui.value.copy(chosenWatched=nowWatched)
                 _ui.value=_ui.value.copy(releases=_ui.value.releases.map { r ->
-                    if(r.show==title && r.episode.season==season && r.episode.number==number) r.copy(watched=watched) else r })
+                    if(r.show==title && r.episode.season==season && r.episode.number==number) r.copy(watched=watched) else r },
+                    continueWatching=_ui.value.continueWatching.filterNot { c -> watched && c.show==title && c.episode.season==season && c.episode.number==number })
                 refresh()
             }
         }
@@ -279,7 +362,7 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
             val semaphore=Semaphore(8)
             val windowStart = LocalDate.now().minusDays(30); val windowEnd = LocalDate.now().plusDays(35)
             fun inWindow(date: String?) = date?.let { runCatching { val d = LocalDate.parse(it); !d.isBefore(windowStart) && d.isBefore(windowEnd) }.getOrDefault(false) } ?: false
-            val result=candidates.map { show -> async(Dispatchers.IO){
+            val perShow=candidates.map { show -> async(Dispatchers.IO){
                 semaphore.withPermit {
                     try {
                         val tv=Api.tmdb.trackerTv(show.tmdbId,key)
@@ -291,17 +374,48 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
                             try { episodes.addAll(Api.tmdb.trackerSeason(show.tmdbId, season, key).episodes) }
                             catch (_: Exception) { /* A show may have season metadata without episodes. */ }
                         }
-                        episodes.distinctBy { it.season to it.number }
+                        val releases = episodes.distinctBy { it.season to it.number }
                             .filter { ep -> ep.airDate?.let { date ->
                                 runCatching { val d=LocalDate.parse(date); !d.isBefore(LocalDate.now().minusDays(30)) && d.isBefore(LocalDate.now().plusDays(35)) }.getOrDefault(false)
                             } ?: false }
                             .map { TrackerRelease(show.title,it,show.poster,store.isWatched(show.title,it.season,it.number)) }
-                    } catch(_:Exception){emptyList()}
+                        // Started but behind the latest aired episode → a "Continue watching" candidate.
+                        val last = tv.last
+                        val behind = if (show.watchedCount > 0 && last != null && last.season > 0 &&
+                            last.season * 10000 + last.number > show.lastSeason * 10000 + show.lastEpisode) show to last else null
+                        releases to behind
+                    } catch(_:Exception){ emptyList<TrackerRelease>() to null }
                 }
-            } }.awaitAll().flatten().filter{!it.episode.airDate.isNullOrBlank()}.sortedBy{it.episode.airDate}
+            } }.awaitAll()
+            val result = perShow.flatMap { it.first }.filter{!it.episode.airDate.isNullOrBlank()}.sortedBy{it.episode.airDate}
             releasesLoadedAt=System.currentTimeMillis()
             _ui.value=_ui.value.copy(releases=result,loading=false)
+            _ui.value=_ui.value.copy(continueWatching = continueWatchingFor(perShow.mapNotNull { it.second }))
         }
+    }
+    /**
+     * Next unwatched episode for shows you're partway through, most recently watched first (up to 40).
+     * Uses the season listing to find the episode after your furthest one, rolling into the next season.
+     */
+    private suspend fun continueWatchingFor(candidates: List<Pair<TrackedShow, TrackerEpisode>>): List<UpNextEntry> = kotlinx.coroutines.coroutineScope {
+        val today = LocalDate.now()
+        val gate = Semaphore(6)
+        candidates.sortedByDescending { it.first.lastWatchedAt }.take(40).map { (show, lastAired) -> async(Dispatchers.IO) { gate.withPermit {
+            runCatching {
+                val season = Api.tmdb.trackerSeason(show.tmdbId, show.lastSeason.coerceAtLeast(1), key).episodes
+                val next = season.firstOrNull { it.number > show.lastEpisode }
+                    ?: Api.tmdb.trackerSeason(show.tmdbId, show.lastSeason + 1, key).episodes.firstOrNull()
+                    ?: return@runCatching null
+                val aired = next.airDate?.let { runCatching { !LocalDate.parse(it).isAfter(today) }.getOrDefault(false) } ?: false
+                if (!aired) return@runCatching null
+                val left = if (next.season == lastAired.season) lastAired.number - next.number + 1 else null
+                val since = runCatching { java.time.temporal.ChronoUnit.DAYS.between(LocalDate.parse(show.lastWatchedAt.take(10)), today) }.getOrNull()
+                UpNextEntry(show.title, next, show.poster,
+                    badge = left?.let { if (it > 1) "$it TO WATCH" else "NEXT" } ?: "NEW SEASON",
+                    detail = since?.let { if (it <= 1) "Watched recently" else "Last watched $it days ago" } ?: "Continue where you left off",
+                    behind = left ?: 1)
+            }.getOrNull()
+        } } }.awaitAll().filterNotNull()
     }
     override fun onCleared(){store.close();super.onCleared()}
 }

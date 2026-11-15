@@ -57,8 +57,10 @@ val DISCOVER_GENRES = listOf(
 fun HomeScreen(
     state: ScreenState, upNext: List<UpNextEntry>, firstFocus: FocusRequester,
     openDetails: (TitleItem) -> Unit, toggleWatchlist: (TitleItem) -> Unit,
-    openTracker: () -> Unit, openServices: () -> Unit, markWatched: (UpNextEntry) -> Unit
+    openTracker: () -> Unit, openServices: () -> Unit, markWatched: (UpNextEntry) -> Unit,
+    openShow: (UpNextEntry) -> Unit = { openTracker() }
 ) {
+    val compact = LocalCompact.current
     val heroes = remember(state.sections) {
         state.sections.filter { it.title.startsWith("Trending") }.flatMap { it.items.take(3) }
             .filter { it.backdrop != null }.take(5)
@@ -69,23 +71,25 @@ fun HomeScreen(
     val hero = heroes.getOrNull(heroIndex)
 
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
-        Box(Modifier.fillMaxWidth().height(340.dp).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))) {
+        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))) {
             hero?.let { AsyncImage(it.hero(), it.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
-            Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
+            Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
+                else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
             if (hero == null) {
-                Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(40.dp), color = Cs.text, fontSize = 26.sp)
-            } else Column(Modifier.align(Alignment.CenterStart).padding(start = 40.dp).fillMaxWidth(.5f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(if (compact) 20.dp else 40.dp), color = Cs.text, fontSize = 26.sp)
+            } else Column(if (compact) Modifier.align(Alignment.BottomStart).padding(20.dp).fillMaxWidth() else Modifier.align(Alignment.CenterStart).padding(start = 40.dp).fillMaxWidth(.5f),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
                 Text("TRENDING #${heroIndex + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
-                Text(hero.label, color = Cs.text, fontSize = 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
-                Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CsButton("Details", primary = true, modifier = Modifier.focusRequester(firstFocus)) { openDetails(hero) }
                     CsButton(if (hero.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { toggleWatchlist(hero) }
                 }
             }
-            if (heroes.size > 1) Row(Modifier.align(Alignment.BottomStart).padding(start = 40.dp, bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            if (heroes.size > 1 && !compact) Row(Modifier.align(Alignment.BottomStart).padding(start = 40.dp, bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 heroes.indices.forEach { i -> Box(Modifier.size(if (i == heroIndex) 26.dp else 6.dp, 6.dp).background(if (i == heroIndex) Cs.accent else Color(0xFF5D7392), RoundedCornerShape(6.dp))) }
             }
         }
@@ -101,9 +105,23 @@ fun HomeScreen(
                 CsChip("Open Tracker", false) { openTracker() }
             }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
-                items(upNext.take(10), key = { it.show }) { e -> UpNextCard(e, onWatched = { markWatched(e) }, onOpen = openTracker) }
+                items(upNext.take(20), key = { it.show }) { e -> UpNextCard(e, onWatched = { markWatched(e) }, onOpen = { openShow(e) }) }
             }
         }
+
+        // Personal picks first, then the catalog rows.
+        if (state.recommended.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            CsSectionTitle("Recommended for you")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(top = 6.dp, bottom = 6.dp, end = 48.dp)) {
+                items(state.recommended, key = { it.ref }) { item ->
+                    Column(Modifier.width(140.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        CsPoster(item) { openDetails(item) }
+                        state.recommendedWhy[item.ref]?.let { Text(it, color = Cs.textMuted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                    }
+                }
+            }
+        } else if (state.likes.isEmpty() && state.watchlist.isEmpty() && upNext.isEmpty() && !state.busy)
+            Text("Tip: press ♥ Like on titles you enjoy, and CineSays will recommend more like them here.", color = Cs.textMuted, fontSize = 13.sp)
 
         state.sections.filter { it.kind != "tv" || !it.title.contains(" · ") }.forEach { section ->
             CsPosterRow(section.title, section.items, onClick = openDetails)
@@ -111,23 +129,27 @@ fun HomeScreen(
     }
 }
 
+/** Selecting the card opens the series in Tracker; the ✓ button below it marks the episode watched. */
 @Composable
 private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
-    Column(Modifier.width(268.dp).onFocusChanged { focused = it.isFocused }
-        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape)
-        .clip(shape).background(Cs.surface).clickable(onClick = onWatched)) {
-        Box(Modifier.fillMaxWidth().height(92.dp).background(Cs.surfaceHigh)) {
-            AsyncImage(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w300$it" },
-                null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            CsBadge(e.badge, Modifier.align(Alignment.TopStart).padding(10.dp), dark = true)
+    Column(Modifier.width(268.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
+            .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape)
+            .clip(shape).background(Cs.surface).clickable(onClick = onOpen)) {
+            Box(Modifier.fillMaxWidth().height(92.dp).background(Cs.surfaceHigh)) {
+                AsyncImage(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w300$it" },
+                    null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                CsBadge(e.badge, Modifier.align(Alignment.TopStart).padding(10.dp), dark = true)
+            }
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(e.show, color = Cs.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("S${e.episode.season} · E${e.episode.number} · ${e.episode.name}", color = Cs.textMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (focused) "Select: open in Tracker" else e.detail, color = if (focused) Cs.accent else Cs.textMuted, fontSize = 11.sp)
+            }
         }
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(e.show, color = Cs.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("S${e.episode.season} · E${e.episode.number} · ${e.episode.name}", color = Cs.textMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(if (focused) "Select = mark watched" else e.detail, color = if (focused) Cs.accent else Cs.textMuted, fontSize = 11.sp)
-        }
+        CsChip("✓ Watched S${e.episode.season}E${e.episode.number}", false, compact = true) { onWatched() }
     }
 }
 
@@ -136,25 +158,56 @@ private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit
 @Composable
 fun DetailsScreen(
     item: TitleItem, state: ScreenState, myProviders: Set<Int>, inTracker: Boolean, backFocus: FocusRequester, context: Context,
-    onBack: () -> Unit, onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onOpenSimilar: (TitleItem) -> Unit
+    onBack: () -> Unit, onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onOpenSimilar: (TitleItem) -> Unit,
+    liked: Boolean = false, onLike: () -> Unit = {}, movieWatched: Boolean = false, onMovieWatched: (Boolean) -> Unit = {}
 ) {
+    val compact = LocalCompact.current
     val regions = state.regions.sorted()
     val best = remember(state.providersByRegion, myProviders) {
         val offers = regions.flatMap { r -> state.providersByRegion[r]?.noExtraCost.orEmpty().map { it to r } }
         offers.firstOrNull { it.first.id in myProviders } ?: offers.firstOrNull()
     }
-    Box(Modifier.fillMaxSize().background(Cs.bg)) {
+    val poster: @Composable () -> Unit = {
+        Box(Modifier.width(if (compact) 140.dp else 220.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(16.dp)).background(Cs.surfaceHigh).border(1.dp, Cs.lineStrong, RoundedCornerShape(16.dp))) {
+            AsyncImage(item.image("w500"), item.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+    }
+    val wherePanel: @Composable (Modifier) -> Unit = { m ->
+        CsPanel(m) {
+            Text("Where to watch", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            if (state.detailBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            else WhereToWatchGrid(regions, state.providersByRegion, myProviders) { p -> openProviderApp(context, p, item.label) }
+            Text(if (myProviders.isEmpty()) "Tip: set My Services in Settings to see your own services first."
+                else "✓ = included with your services. Buttons open the installed app.", color = Cs.textMuted, fontSize = 12.sp)
+        }
+    }
+    val castRow: @Composable (Modifier) -> Unit = { m ->
+        Column(m, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (state.cast.isNotEmpty()) {
+                Text("Cast", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    state.cast.forEach { c ->
+                        Column(Modifier.width(80.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AsyncImage(c.image(), c.name, Modifier.size(64.dp).clip(CircleShape).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
+                            Text(c.name, color = Cs.textSoft, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Cs.bg).safeDrawingPadding()) {
         AsyncImage(item.hero(), null, Modifier.fillMaxWidth().height(430.dp), contentScale = ContentScale.Crop)
         Box(Modifier.fillMaxWidth().height(430.dp).background(Brush.verticalGradient(0f to Cs.bg.copy(alpha = .2f), 1f to Cs.bg)))
         Box(Modifier.fillMaxWidth().height(430.dp).background(Brush.horizontalGradient(0f to Cs.bg, .65f to Color.Transparent)))
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 56.dp, vertical = 32.dp), verticalArrangement = Arrangement.spacedBy(26.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
-                Box(Modifier.width(220.dp).height(330.dp).clip(RoundedCornerShape(16.dp)).background(Cs.surfaceHigh).border(1.dp, Cs.lineStrong, RoundedCornerShape(16.dp))) {
-                    AsyncImage(item.image("w500"), item.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = if (compact) 16.dp else 56.dp, vertical = if (compact) 16.dp else 32.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 18.dp else 26.dp)) {
+            if (compact) CsChip("← Back", false, Modifier.focusRequester(backFocus)) { onBack() }
+            Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 16.dp else 40.dp)) {
+                poster()
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    CsChip("← Back", false, Modifier.focusRequester(backFocus)) { onBack() }
-                    Text(item.label, color = Cs.text, fontSize = 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 44.sp)
+                    if (!compact) CsChip("← Back", false, Modifier.focusRequester(backFocus)) { onBack() }
+                    Text(item.label, color = Cs.text, fontSize = if (compact) 24.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 28.sp else 44.sp)
                     item.tagline?.let { Text("“$it”", color = Color(0xFFB8C6DA), fontSize = 16.sp, fontStyle = FontStyle.Italic) }
                     val meta = listOfNotNull(
                         item.year.ifBlank { null }, if (item.kind == "tv") "TV Series" else "Movie",
@@ -168,40 +221,31 @@ fun DetailsScreen(
                         RatingTile("Rotten Tomatoes", state.rottenTomatoes ?: "—")
                     }
                     Text(item.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 780.dp))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (best != null) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
-                        state.trailer?.let { key -> CsButton("▶ Trailer", primary = best == null) { openUrl(context, "https://www.youtube.com/watch?v=$key") } }
-                        CsButton(if (item.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onToggleWatchlist() }
-                        if (item.kind == "tv" && !state.detailBusy) CsButton(if (inTracker) "✓ Tracking" else "+ Track episodes") { if (!inTracker) onTrack() }
-                        CsButton("Recommend") { onRecommend() }
-                    }
+                    if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                CsPanel(Modifier.weight(1.25f)) {
-                    Text("Where to watch", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                    if (state.detailBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    else WhereToWatchGrid(regions, state.providersByRegion, myProviders) { p -> openProviderApp(context, p, item.label) }
-                    Text(if (myProviders.isEmpty()) "Tip: set My Services in Settings to see your own services first."
-                        else "✓ = included with your services. Buttons open the installed TV app.", color = Cs.textMuted, fontSize = 12.sp)
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (state.cast.isNotEmpty()) {
-                        Text("Cast", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            state.cast.forEach { c ->
-                                Column(Modifier.width(80.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    AsyncImage(c.image(), c.name, Modifier.size(64.dp).clip(CircleShape).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
-                                    Text(c.name, color = Cs.textSoft, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            if (compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched)
+            if (compact) { wherePanel(Modifier.fillMaxWidth()); castRow(Modifier.fillMaxWidth()) }
+            else Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) { wherePanel(Modifier.weight(1.25f)); castRow(Modifier.weight(1f)) }
             if (state.similar.isNotEmpty()) CsPosterRow("More like this", state.similar, onClick = onOpenSimilar)
             Text("Availability from TMDB / JustWatch. Provider buttons launch installed apps; exact-title links need verified content IDs.", color = Cs.textMuted, fontSize = 12.sp)
         }
+    }
+}
+
+@Composable
+private fun DetailActions(
+    item: TitleItem, state: ScreenState, best: Pair<Provider, String>?, inTracker: Boolean, liked: Boolean, movieWatched: Boolean, context: Context,
+    onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onLike: () -> Unit, onMovieWatched: (Boolean) -> Unit
+) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (best != null) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
+        state.trailer?.let { key -> CsButton("▶ Trailer", primary = best == null) { openUrl(context, "https://www.youtube.com/watch?v=$key") } }
+        CsButton(if (liked) "♥ Liked" else "♡ Like") { onLike() }
+        CsButton(if (item.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onToggleWatchlist() }
+        if (item.kind == "movie" && !state.detailBusy) CsButton(if (movieWatched) "✓ Watched" else "Mark watched") { onMovieWatched(!movieWatched) }
+        if (item.kind == "tv" && !state.detailBusy) CsButton(if (inTracker) "✓ Tracking" else "+ Track episodes") { if (!inTracker) onTrack() }
+        CsButton("Recommend") { onRecommend() }
     }
 }
 
@@ -314,8 +358,8 @@ fun RouletteScreen(
             Text("Roulette", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
             Text("Can't decide? Set a mood and spin.", color = Cs.textMuted, fontSize = 14.sp, modifier = Modifier.padding(bottom = 5.dp))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            Column(Modifier.width(300.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        CsTwoPane(gap = 32.dp, leftWidth = 300.dp, left = { paneMod ->
+            Column(paneMod, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Label("TONIGHT I WANT")
                 ROULETTE_MOODS.chunked(2).forEach { pair ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -334,18 +378,19 @@ fun RouletteScreen(
                 if (source == "mine" && state.myServices.isEmpty()) Text("No services set yet; this spins across everything.", color = Cs.warn, fontSize = 12.sp)
                 Text("Moods map to TMDB genres and ratings. Recent picks are skipped.", color = Cs.textMuted, fontSize = 12.sp)
             }
+        }, right = { paneMod ->
             // Wheel while choosing and spinning; the pick then replaces this whole screen (see above).
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.size(400.dp), contentAlignment = Alignment.Center) {
+            Column(paneMod, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(if (LocalCompact.current) 300.dp else 400.dp), contentAlignment = Alignment.Center) {
                     Wheel(Modifier.fillMaxSize().graphicsLayer { rotationZ = angle.value })
                     Canvas(Modifier.align(Alignment.TopCenter).size(28.dp, 26.dp)) {
                         drawPath(Path().apply { moveTo(0f, 0f); lineTo(size.width, 0f); lineTo(size.width / 2, size.height); close() }, Cs.text)
                     }
                     SpinButton(state.rouletteBusy, spinFocus, onSpin)
                 }
-                Text(if (state.rouletteBusy) "Finding your next watch…" else "Pick a mood, then press Select on SPIN", color = Cs.textMuted, fontSize = 14.sp)
+                Text(if (state.rouletteBusy) "Finding your next watch…" else "Pick a mood, then press SPIN", color = Cs.textMuted, fontSize = 14.sp)
             }
-        }
+        })
     }
 }
 
@@ -363,12 +408,13 @@ private fun RouletteReveal(
     Box(Modifier.fillMaxWidth().clip(shape).background(Cs.surface).border(1.dp, Cs.line, shape)) {
         AsyncImage(pick.hero(), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
         Box(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Cs.bg.copy(alpha = .96f), .5f to Cs.bg.copy(alpha = .85f), 1f to Cs.bg.copy(alpha = .35f))))
-        Row(Modifier.padding(24.dp), horizontalArrangement = Arrangement.spacedBy(30.dp)) {
-            AsyncImage(pick.image("w500"), pick.label, Modifier.width(214.dp).height(321.dp).clip(RoundedCornerShape(16.dp)).background(Cs.surfaceHigh)
+        val cmp = LocalCompact.current
+        Row(Modifier.padding(if (cmp) 14.dp else 24.dp), horizontalArrangement = Arrangement.spacedBy(if (cmp) 14.dp else 30.dp)) {
+            AsyncImage(pick.image("w500"), pick.label, Modifier.width(if (cmp) 110.dp else 214.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(16.dp)).background(Cs.surfaceHigh)
                 .border(1.dp, Cs.lineStrong, RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
             Column(Modifier.weight(1f).widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("YOUR PICK · ${mood.label.uppercase()} · ${if (pick.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
-                Text(pick.label, color = Cs.text, fontSize = 40.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(pick.label, color = Cs.text, fontSize = if (cmp) 24.sp else 40.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (cmp) 28.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(listOfNotNull(
                     pick.rating.takeIf { it > 0 }?.let { "★ ${"%.1f".format(it)}" }, pick.year.ifBlank { null },
                     pick.runtime?.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
@@ -382,13 +428,13 @@ private fun RouletteReveal(
                 } ?: Text("No streaming offer found in your regions; check Details for rent or buy.", color = Cs.warn, fontSize = 14.sp)
                 Text(pick.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     val offer = state.rouletteOffer
                     if (offer != null) CsButton("▶ Open in ${offer.first.name}", primary = true, modifier = Modifier.focusRequester(primaryFocus)) { openProviderApp(context, offer.first, pick.label) }
                     CsButton("Details", primary = offer == null, modifier = if (offer == null) Modifier.focusRequester(primaryFocus) else Modifier) { onDetails(pick) }
                     CsButton(if (pick.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onWatchlist(pick) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CsButton("↻ Spin again") { onSpin() }
                     CsButton("Change mood") { onChangeMood() }
                 }
@@ -432,7 +478,7 @@ private fun SpinButton(busy: Boolean, focus: FocusRequester, onClick: () -> Unit
 @Composable
 fun ServicesOnboarding(state: ScreenState, firstFocus: FocusRequester, onToggleService: (String) -> Unit, onToggleRegion: (String) -> Unit, onDone: () -> Unit) {
     LaunchedEffect(Unit) { delay(120); runCatching { firstFocus.requestFocus() } }
-    Column(Modifier.fillMaxSize().background(Cs.bg).verticalScroll(rememberScrollState()).padding(horizontal = 96.dp, vertical = 40.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+    Column(Modifier.fillMaxSize().background(Cs.bg).safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = if (LocalCompact.current) 16.dp else 96.dp, vertical = if (LocalCompact.current) 20.dp else 40.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("WELCOME · YOU CAN CHANGE THIS IN SETTINGS", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
             Text("Which services do you use?", color = Cs.text, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
@@ -458,14 +504,14 @@ fun ServicesOnboarding(state: ScreenState, firstFocus: FocusRequester, onToggleS
 @Composable
 fun ServiceTiles(selected: Set<String>, firstFocus: FocusRequester? = null, onToggle: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        STREAMING_SERVICES.chunked(5).forEachIndexed { rowIndex, row ->
+        STREAMING_SERVICES.chunked(if (LocalCompact.current) 2 else 5).forEachIndexed { rowIndex, row ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 row.forEachIndexed { i, s ->
                     var focused by remember { mutableStateOf(false) }
                     val on = s.key in selected
                     val shape = RoundedCornerShape(14.dp)
                     val base = if (rowIndex == 0 && i == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier
-                    Row(base.width(196.dp).height(72.dp).onFocusChanged { focused = it.isFocused }
+                    Row(base.then(if (LocalCompact.current) Modifier.weight(1f) else Modifier.width(196.dp)).height(72.dp).onFocusChanged { focused = it.isFocused }
                         .border(if (focused) 3.dp else if (on) 2.dp else 1.dp, if (focused) Cs.focusRing else if (on) Cs.accent else Cs.line, shape)
                         .background(if (on) Color(0xFF0A3A6E) else Cs.surface, shape).clickable { onToggle(s.key) }.padding(horizontal = 16.dp),
                         verticalAlignment = Alignment.CenterVertically) {

@@ -2,6 +2,8 @@ package com.cineglass.tv
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVParser
 import java.io.ByteArrayInputStream
@@ -13,10 +15,16 @@ private data class RawShow(val id:String,val title:String,val followed:Boolean,v
 private data class RawEpisode(val title:String,val season:Int,val episode:Int,val watchedAt:String)
 private data class RawMovie(val title:String,val watchedAt:String)
 
+/** Imports a TV Time GDPR export, a CineSays-prepared TV Time ZIP, or a BingeBoxd export (TMDB ids). */
 class TVTimeImporter(private val context: Context) {
     private val shows = linkedMapOf<String,RawShow>()
     private val episodes = linkedMapOf<String,RawEpisode>()
     private val movies = linkedMapOf<String,RawMovie>()
+    // BingeBoxd: everything is keyed by TMDB id; titles are fetched from TMDB on commit.
+    private val bbStatus = linkedMapOf<Int,String>()                  // showId -> session status
+    private val bbEpisodes = linkedMapOf<String,Triple<Int,Pair<Int,Int>,String>>() // "id:s:e" -> (showId,(s,e),watchedAt)
+    private val bbMovies = linkedMapOf<Int,String>()                  // movieId -> first watchedAt
+    private var isBingeBoxd = false
     private var detectedFormat = "Unknown ZIP"
     private val warnings = mutableListOf<String>()
 
@@ -44,8 +52,11 @@ class TVTimeImporter(private val context: Context) {
     }
     fun inspect(uri:Uri): TrackerImportPreview {
         shows.clear();episodes.clear();movies.clear();warnings.clear()
+        bbStatus.clear();bbEpisodes.clear();bbMovies.clear();isBingeBoxd=false
         detectedFormat="Unknown ZIP"
-        val wanted=setOf("shows.csv","watched_episodes.csv","watched_movies.csv","followed_tv_show.csv","tracking-prod-records-v2.csv","tracking-prod-records.csv")
+        // Only tracking tables are read; account, notification and social files are ignored.
+        val wanted=setOf("shows.csv","watched_episodes.csv","watched_movies.csv","followed_tv_show.csv","tracking-prod-records-v2.csv","tracking-prod-records.csv",
+            "episode-watches.csv","movie-watches.csv","watch-sessions.csv")
         val files=mutableMapOf<String,ByteArray>()
         context.contentResolver.openInputStream(uri)?.use { input ->
             ZipInputStream(input).use { zip ->
@@ -67,7 +78,34 @@ class TVTimeImporter(private val context: Context) {
                 }
             }
         } ?: error("Unable to read selected ZIP")
-        if("shows.csv" in files && "watched_episodes.csv" in files) {
+        if("episode-watches.csv" in files || "watch-sessions.csv" in files) {
+            detectedFormat="BingeBoxd export"
+            isBingeBoxd=true
+            val epId=Regex("^S(\\d+)S(\\d+)E(\\d+)$")
+            files["watch-sessions.csv"]?.let { readRows(it).forEach { r ->
+                val id=r["showId"]?.toIntOrNull() ?: return@forEach
+                // A rewatch session must not downgrade an earlier status; keep the most "active" one.
+                val status=r["status"].orEmpty()
+                val rank={ s:String -> when(s){ "in-progress","caught-up","paused","not-started" -> 3; "completed" -> 2; "dropped" -> 1; else -> 0 } }
+                if(rank(status) >= rank(bbStatus[id].orEmpty())) bbStatus[id]=status
+            } }
+            files["episode-watches.csv"]?.let { readRows(it).forEach { r ->
+                val m=epId.find(r["episodeId"].orEmpty()) ?: return@forEach
+                val (show,s,e)=m.destructured
+                val k="$show:$s:$e"; val at=r["watchedAt"].orEmpty()
+                val prev=bbEpisodes[k]
+                if(prev==null || (at.isNotBlank() && at < prev.third)) bbEpisodes[k]=Triple(show.toInt(), s.toInt() to e.toInt(), at)
+            } }
+            files["movie-watches.csv"]?.let { readRows(it).forEach { r ->
+                val id=r["movieId"]?.toIntOrNull() ?: return@forEach
+                val at=r["watchedAt"].orEmpty()
+                if(bbMovies[id]==null || at < bbMovies.getValue(id)) bbMovies[id]=at
+            } }
+            val showIds=(bbStatus.keys + bbEpisodes.values.map { it.first }).toSet()
+            if(showIds.isEmpty() && bbMovies.isEmpty()) warnings.add("No watch history found in this BingeBoxd export")
+            warnings.add("Show and movie titles are looked up on TMDB during import; this can take a minute for large histories")
+            return TrackerImportPreview(showIds.size,bbEpisodes.size,bbMovies.size,detectedFormat,warnings.toList())
+        } else if("shows.csv" in files && "watched_episodes.csv" in files) {
             detectedFormat="CineSays prepared TV Time export"
             readRows(files.getValue("shows.csv")).forEach { r -> addShow(r["tvtime_show_id"].orEmpty(),r["title"].orEmpty(),r["followed"]=="true",r["archived"]=="true",r["followed_at"].orEmpty()) }
             readRows(files.getValue("watched_episodes.csv")).forEach { r -> addEp(r["show_title"].orEmpty(),r["season_number"],r["episode_number"],r["watched_at"]) }
@@ -90,7 +128,9 @@ class TVTimeImporter(private val context: Context) {
         warnings.add("TV Time identifiers are not TMDB IDs; shows will be matched separately")
         return TrackerImportPreview(shows.size,episodes.size,movies.size,detectedFormat,warnings.toList())
     }
-    fun commit(store:TrackerStore): TrackerImportPreview {
+    /** Writes the inspected data. BingeBoxd needs network (TMDB titles); [progress] reports what it is doing. */
+    suspend fun commit(store:TrackerStore, progress:(String)->Unit = {}): TrackerImportPreview {
+        if(isBingeBoxd) return commitBingeBoxd(store,progress)
         val db=store.writableDatabase
         db.beginTransaction()
         try {
@@ -101,4 +141,55 @@ class TVTimeImporter(private val context: Context) {
         } finally { db.endTransaction() }
         return TrackerImportPreview(shows.size,episodes.size,movies.size,detectedFormat,warnings.toList())
     }
+
+    private suspend fun commitBingeBoxd(store:TrackerStore, progress:(String)->Unit): TrackerImportPreview = kotlinx.coroutines.coroutineScope {
+        val key=BuildConfig.TMDB_API_KEY
+        val gate=kotlinx.coroutines.sync.Semaphore(8)
+        val showIds=(bbStatus.keys + bbEpisodes.values.map { it.first }).toSet().toList()
+        var done=0
+        // 1) Show titles + posters (reuses a title already in the tracker for the same TMDB id, e.g. from TV Time).
+        val showInfo=showIds.map { id -> async(kotlinx.coroutines.Dispatchers.IO) { gate.withPermitCompat {
+            val known=store.showTitleByTmdb(id)
+            val info=if(known!=null) known to null else runCatching { Api.tmdb.trackerTv(id,key) }.getOrNull()?.let { it.name to it.poster }
+            synchronized(this@TVTimeImporter) { done++; progress("Looking up shows… $done / ${showIds.size}") }
+            id to info
+        } } }.awaitAll().toMap()
+        // 2) Movie titles + posters.
+        val movieIds=bbMovies.keys.toList(); done=0
+        val movieInfo=movieIds.map { id -> async(kotlinx.coroutines.Dispatchers.IO) { gate.withPermitCompat {
+            val info=runCatching { Api.tmdb.detail("movie",id,key) }.getOrNull()?.let { it.label to it.poster }
+            synchronized(this@TVTimeImporter) { done++; if(done%20==0 || done==movieIds.size) progress("Looking up movies… $done / ${movieIds.size}") }
+            id to info
+        } } }.awaitAll().toMap()
+        progress("Saving your history…")
+        var importedShows=0; var importedEps=0; var importedMovies=0
+        val db=store.writableDatabase
+        db.beginTransaction()
+        try {
+            for(id in showIds) {
+                val (title,poster)=showInfo[id] ?: continue
+                val status=bbStatus[id].orEmpty()
+                store.addShow(title,"bingeboxd:$id",followed = status!="dropped",archived = status=="completed")
+                if(poster!=null) store.setTmdb(title,id,poster) // known titles already carry their TMDB id and poster
+                importedShows++
+            }
+            for((showId,se,at) in bbEpisodes.values) {
+                val title=showInfo[showId]?.first ?: continue
+                db.execSQL("INSERT OR IGNORE INTO watched(title_key,season,episode,watched_at) VALUES(?,?,?,?)",
+                    arrayOf(title.trim().lowercase(java.util.Locale.ROOT),se.first,se.second,at))
+                importedEps++
+            }
+            for((id,at) in bbMovies) {
+                val (title,poster)=movieInfo[id] ?: continue
+                store.addMovie(title,at,id,poster); importedMovies++
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        val skipped=(showIds.size-importedShows)+(movieIds.size-importedMovies)
+        TrackerImportPreview(importedShows,importedEps,importedMovies,detectedFormat,
+            if(skipped>0) listOf("$skipped titles could not be found on TMDB and were skipped") else emptyList())
+    }
 }
+
+/** Semaphore.withPermit without importing it at top level (keeps this file's imports unchanged). */
+private suspend fun <T> kotlinx.coroutines.sync.Semaphore.withPermitCompat(block: suspend () -> T): T { acquire(); try { return block() } finally { release() } }

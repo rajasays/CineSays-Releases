@@ -62,6 +62,11 @@ service cloud.firestore {
       match /sent/{recId} {
         allow read, write: if signedIn() && me() == uid;
       }
+
+      // Private cloud backup (tracker history, watchlist, likes, services): owner only.
+      match /backup/{part} {
+        allow read, write: if signedIn() && me() == uid;
+      }
     }
 
     // Friend codes: look up one code at a time (no listing); a code can be claimed once, by its owner.

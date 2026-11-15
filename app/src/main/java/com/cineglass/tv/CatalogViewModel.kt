@@ -29,6 +29,7 @@ private val REGIONS = stringPreferencesKey("regions")
 private val AVAILABLE_REGIONS = setOf("US", "GB", "PK", "CA", "AU", "IN", "DE", "FR", "AE", "JP")
 private val MY_SERVICES = stringPreferencesKey("my_services")
 private val ONBOARDED = stringPreferencesKey("onboarded")
+private val LIKES = stringPreferencesKey("likes")
 
 /** A subscription the user can mark as theirs. Some services have more than one TMDB provider ID. */
 /** [free] = no subscription needed (ad-supported); TMDB lists those under "free"/"ads", not "flatrate". */
@@ -81,7 +82,12 @@ data class ScreenState(
     val rouletteOffer: Pair<Provider, String>? = null,
     val cast: List<CastMember> = emptyList(), val similar: List<TitleItem> = emptyList(),
     /** null until preferences load; false shows the first-run "My Services" step. */
-    val onboarded: Boolean? = null
+    val onboarded: Boolean? = null,
+    /** Titles the user marked ♥ ("movie:550"); the strongest signal for recommendations. */
+    val likes: Set<String> = emptySet(),
+    val recommended: List<TitleItem> = emptyList(),
+    /** ref -> "Because you liked X" */
+    val recommendedWhy: Map<String, String> = emptyMap()
 )
 
 /** Roulette moods map to TMDB genres (OR-ed) plus a rating floor. Movie genre IDs; TV is mapped. */
@@ -120,6 +126,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
             val services = p[MY_SERVICES].orEmpty().split(",").filter { k -> STREAMING_SERVICES.any { it.key == k } }.toSet()
             _state.update { it.copy(regions = saved.ifEmpty { setOf(migrated) }, myServices = services,
                 onboarded = p[ONBOARDED] == "1" || services.isNotEmpty(),
+                likes = p[LIKES].orEmpty().split(",").filter { s -> s.isNotBlank() }.toCollection(LinkedHashSet()),
                 watchlist = p[WATCHLIST].orEmpty().split(",").filter { s -> s.isNotBlank() }.toCollection(LinkedHashSet())) }
             refresh()
         }
@@ -144,6 +151,77 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Turns the [MY_SERVICES_PROVIDER] sentinel into real IDs; passes other values through. */
     private fun resolveProvider(providerId: String?): String? =
         if (providerId == MY_SERVICES_PROVIDER) myServicesFilter() else providerId
+
+    // ── Backup / restore (Account sync): watchlist, likes, services and regions ──
+    fun exportPrefs(): String = org.json.JSONObject()
+        .put("watchlist", org.json.JSONArray(_state.value.watchlist.toList()))
+        .put("likes", org.json.JSONArray(_state.value.likes.toList()))
+        .put("services", org.json.JSONArray(_state.value.myServices.toList()))
+        .put("regions", org.json.JSONArray(_state.value.regions.toList())).toString()
+
+    /** Merges a backup into this device (union of lists; regions/services only filled in if empty here). */
+    fun importPrefs(json: String) {
+        val o = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return
+        fun list(k: String) = o.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+        val s = _state.value
+        val watchlist = LinkedHashSet(s.watchlist).apply { addAll(list("watchlist")) }
+        val likes = LinkedHashSet(s.likes).apply { addAll(list("likes")) }
+        val services = s.myServices + list("services").filter { k -> STREAMING_SERVICES.any { it.key == k } }
+        val regions = (s.regions + list("regions").filter { it in AVAILABLE_REGIONS }).ifEmpty { setOf("US") }
+        _state.update { it.copy(watchlist = watchlist, likes = likes, myServices = services, regions = regions, onboarded = true) }
+        viewModelScope.launch {
+            app.store.edit {
+                it[WATCHLIST] = watchlist.joinToString(","); it[LIKES] = likes.joinToString(",")
+                it[MY_SERVICES] = services.sorted().joinToString(","); it[REGIONS] = regions.sorted().joinToString(","); it[ONBOARDED] = "1"
+            }
+        }
+        refresh()
+    }
+
+    fun toggleLike(item: TitleItem) {
+        val updated = LinkedHashSet(_state.value.likes).apply { if (!add(item.ref)) remove(item.ref) }
+        _state.update { it.copy(likes = updated) }
+        viewModelScope.launch { app.store.edit { it[LIKES] = updated.joinToString(",") } }
+    }
+
+    private var recommendKey = ""
+    /**
+     * "Recommended for you": TMDB recommendations for your strongest signals, scored by how many of
+     * them point at a title (likes ×3, watchlist ×2, recently watched/tracked ×1). Anything you've
+     * already saved, tracked or watched is left out; ties go to the higher-rated title.
+     * [watchedSeeds]: recent tracker refs ("tv:1399", "movie:550"); [exclude]: everything tracked/watched.
+     */
+    fun loadRecommendations(watchedSeeds: List<String>, exclude: Set<String>) {
+        val s = _state.value
+        val seeds = (s.likes.reversed().take(6).map { it to 3 } + s.watchlist.reversed().take(5).map { it to 2 } + watchedSeeds.take(6).map { it to 1 })
+            .distinctBy { it.first }
+        val newKey = seeds.joinToString() + exclude.size
+        if (key.isBlank() || seeds.isEmpty() || newKey == recommendKey) return
+        recommendKey = newKey
+        viewModelScope.launch {
+            val skip = exclude + s.watchlist + s.likes
+            val scores = linkedMapOf<String, Int>(); val items = mutableMapOf<String, TitleItem>(); val why = mutableMapOf<String, Pair<Int, String>>()
+            val known = (s.sections.flatMap { it.items } + s.watchlistItems).associateBy { it.ref }
+            coroutineScope {
+                seeds.map { (ref, weight) -> async {
+                    val (kind, id) = ref.split(":").let { it.getOrNull(0) to it.getOrNull(1)?.toIntOrNull() }
+                    if (kind == null || id == null) return@async null
+                    val recs = runCatching { Api.tmdb.recommendations(kind, id, key).results }.getOrNull().orEmpty()
+                    val seedName = known[ref]?.label ?: runCatching { Api.tmdb.detail(kind, id, key).label }.getOrNull().orEmpty()
+                    Triple(recs.map { it.copy(mediaType = it.mediaType ?: kind) }, weight, seedName)
+                } }.awaitAll()
+            }.filterNotNull().forEach { (recs, weight, seedName) ->
+                recs.filter { it.poster != null && it.ref !in skip && it.rating >= 6.0 }.forEach { r ->
+                    scores[r.ref] = (scores[r.ref] ?: 0) + weight; items[r.ref] = r
+                    if (seedName.isNotBlank() && (why[r.ref]?.first ?: 0) < weight)
+                        why[r.ref] = weight to (if (weight == 3) "Because you liked $seedName" else if (weight == 2) "Like $seedName on your watchlist" else "Because you watched $seedName")
+                }
+            }
+            val ranked = scores.entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenByDescending { items[it.key]?.rating ?: 0.0 })
+                .take(20).mapNotNull { items[it.key] }
+            _state.update { it.copy(recommended = ranked, recommendedWhy = why.mapValues { e -> e.value.second }) }
+        }
+    }
 
     /** Leaves the Roulette result and returns to the filters and wheel. */
     fun clearRoulettePick() { _state.update { it.copy(roulettePick = null, rouletteOffer = null) } }

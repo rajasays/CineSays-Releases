@@ -81,9 +81,9 @@ fun FriendsScreen(social: SocialRepository, open: (String, Int) -> Unit) {
         }
         if (!state.enabled) { ConnectingPanel(state.message); return@Column }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+        CsTwoPane(gap = 24.dp, leftWidth = 300.dp, left = { paneMod ->
             // ── Left: you ──
-            Column(Modifier.width(300.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(paneMod, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 ProfileCard(state, social)
                 AddFriendCard(social)
                 if (state.invites.isNotEmpty()) CsPanel(Modifier.fillMaxWidth()) {
@@ -101,9 +101,9 @@ fun FriendsScreen(social: SocialRepository, open: (String, Int) -> Unit) {
                 }
                 if (state.message.isNotBlank()) Text(state.message, color = Cs.accent, fontSize = 13.sp)
             }
-
+        }, right = { paneMod ->
             // ── Right: them ──
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(paneMod, verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 val picks = state.received.filter { focusFriend == null || it.senderId == focusFriend }
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -137,7 +137,7 @@ fun FriendsScreen(social: SocialRepository, open: (String, Int) -> Unit) {
                     }
                 }
             }
-        }
+        })
     }
 }
 

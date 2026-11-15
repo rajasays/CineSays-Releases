@@ -24,6 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 
+/** True on phones / narrow windows (< 700dp wide): screens stack columns and shrink padding. */
+val LocalCompact = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 /** CineSays 2 palette (from the approved screen concepts). */
 object Cs {
     val bg = Color(0xFF050C18)
@@ -130,6 +133,22 @@ fun CsPosterGrid(items: List<TitleItem>, posterWidth: Dp = 132.dp, gap: Dp = 14.
                 }
             }
         }
+    }
+}
+
+/**
+ * Two panes side by side on TV, stacked on phones. Give the left pane a fixed [leftWidth] or a
+ * [leftWeight] (right pane takes weight 1).
+ */
+@Composable
+fun CsTwoPane(
+    gap: Dp = 24.dp, leftWidth: Dp? = null, leftWeight: Float = 1f,
+    left: @Composable (Modifier) -> Unit, right: @Composable (Modifier) -> Unit
+) {
+    if (LocalCompact.current) Column(verticalArrangement = Arrangement.spacedBy(gap)) { left(Modifier.fillMaxWidth()); right(Modifier.fillMaxWidth()) }
+    else Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+        left(if (leftWidth != null) Modifier.width(leftWidth) else Modifier.weight(leftWeight))
+        right(Modifier.weight(1f))
     }
 }
 

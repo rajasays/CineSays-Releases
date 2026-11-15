@@ -29,15 +29,20 @@ data class SocialState(
     val name: String = "CineSays User", val friendCode: String = "",
     val friends: List<CineFriend> = emptyList(), val invites: List<CineInvite> = emptyList(),
     val received: List<CineRecommendation> = emptyList(), val sent: List<CineRecommendation> = emptyList(),
-    val message: String = ""
+    val message: String = "",
+    /** Signed-in email, or null while this device uses an anonymous (device-only) identity. */
+    val email: String? = null,
+    val accountBusy: Boolean = false, val accountMessage: String = "",
+    /** Epoch ms of the last cloud backup from any device, 0 if none. */
+    val lastBackupAt: Long = 0
 )
 
 /**
- * Optional Firebase backend. This is not a fake friends list: until the user configures
- * Firebase, this state reports that cloud sync is unavailable.
+ * Optional Firebase backend for Friends, plus account sign-in and cloud backup.
  *
- * Anonymous identity persists through app updates, but may be lost if app data is cleared.
- * For durable multi-device identity, add account linking (email/device-code sign-in) later.
+ * A device starts with an anonymous identity. "Create account" links an email + password to that
+ * same identity (same uid, so friend code and friends are kept); "Sign in" on another device then
+ * reaches the same uid and restores the private backup at profiles/{uid}/backup/.
  */
 class SocialRepository(private val app: Application) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -63,21 +68,112 @@ class SocialRepository(private val app: Application) {
                 auth = FirebaseAuth.getInstance(firebaseApp)
                 db = FirebaseFirestore.getInstance(firebaseApp)
                 val user = auth!!.currentUser ?: auth!!.signInAnonymously().await().user
-                uid = requireNotNull(user).uid
-                val profile = db!!.collection("profiles").document(uid)
-                val existing = profile.get().await()
-                val name = existing.getString("name") ?: "CineSays User"
-                val code = existing.getString("friendCode") ?: UUID.randomUUID().toString().replace("-", "").take(10).uppercase()
-                if (!existing.exists()) {
-                    profile.set(mapOf("name" to name, "friendCode" to code)).await()
-                    db!!.collection("friendCodes").document(code).set(mapOf("uid" to uid)).await()
-                }
-                _state.value = _state.value.copy(enabled = true, name = name, friendCode = code, message = "")
-                subscribe()
+                attach(requireNotNull(user))
             } catch (e: Exception) {
                 _state.value = _state.value.copy(message = "Cloud connection unavailable: ${e.localizedMessage}")
             }
         }
+    }
+
+    /** Loads (or creates) the profile for [user] and starts the live listeners. */
+    private suspend fun attach(user: com.google.firebase.auth.FirebaseUser) {
+        uid = user.uid
+        val profile = db!!.collection("profiles").document(uid)
+        val existing = profile.get().await()
+        val name = existing.getString("name") ?: "CineSays User"
+        val code = existing.getString("friendCode") ?: UUID.randomUUID().toString().replace("-", "").take(10).uppercase()
+        if (!existing.exists()) {
+            profile.set(mapOf("name" to name, "friendCode" to code)).await()
+            db!!.collection("friendCodes").document(code).set(mapOf("uid" to uid)).await()
+        }
+        val meta = runCatching { profile.collection("backup").document("meta").get().await() }.getOrNull()
+        _state.value = _state.value.copy(enabled = true, name = name, friendCode = code, message = "",
+            email = user.email?.takeIf { !user.isAnonymous }, lastBackupAt = meta?.getLong("updatedAt") ?: 0)
+        subscribe()
+    }
+
+    // ───────────── Account + cloud backup ─────────────
+
+    private fun friendly(e: Exception): String {
+        val msg = e.localizedMessage.orEmpty()
+        return when {
+            "OPERATION_NOT_ALLOWED" in msg || "not enabled" in msg -> "Email sign-in isn't switched on for this app yet (Firebase console › Authentication › Sign-in method › Email/Password)."
+            e is com.google.firebase.auth.FirebaseAuthUserCollisionException -> "That email already has a CineSays account. Use Sign in instead."
+            e is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException -> "Email or password is incorrect."
+            e is com.google.firebase.auth.FirebaseAuthInvalidUserException -> "No account with that email. Use Create account first."
+            e is com.google.firebase.auth.FirebaseAuthWeakPasswordException -> "Choose a password of at least 6 characters."
+            else -> msg.ifBlank { "Request failed" }
+        }
+    }
+
+    /** Turns this device's anonymous identity into an email account: same uid, so friends are kept. */
+    suspend fun createAccount(email: String, password: String, backup: String): Boolean {
+        val a = auth ?: return false.also { _state.value = _state.value.copy(accountMessage = "Not connected yet") }
+        _state.value = _state.value.copy(accountBusy = true, accountMessage = "")
+        return try {
+            val cred = com.google.firebase.auth.EmailAuthProvider.getCredential(email.trim(), password)
+            val user = a.currentUser?.linkWithCredential(cred)?.await()?.user ?: a.createUserWithEmailAndPassword(email.trim(), password).await().user!!
+            _state.value = _state.value.copy(email = user.email, accountBusy = false, accountMessage = "Account created. Your data is now backed up.")
+            uploadBackup(backup)
+            true
+        } catch (e: Exception) { _state.value = _state.value.copy(accountBusy = false, accountMessage = friendly(e)); false }
+    }
+
+    /** Signs in to an existing account (e.g. on a new device). Returns the cloud backup to merge, if any. */
+    suspend fun signIn(email: String, password: String): String? {
+        val a = auth ?: return null.also { _state.value = _state.value.copy(accountMessage = "Not connected yet") }
+        _state.value = _state.value.copy(accountBusy = true, accountMessage = "")
+        return try {
+            listeners.forEach { it.remove() }; listeners.clear()
+            val user = a.signInWithEmailAndPassword(email.trim(), password).await().user!!
+            attach(user)
+            val data = downloadBackup()
+            _state.value = _state.value.copy(accountBusy = false, accountMessage = if (data != null) "Signed in. Restoring your data…" else "Signed in. No backup found yet.")
+            data
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(accountBusy = false, accountMessage = friendly(e))
+            a.currentUser?.let { runCatching { attach(it) } } // keep Friends working on the previous identity
+            null
+        }
+    }
+
+    suspend fun sendPasswordReset(email: String) {
+        val a = auth ?: return
+        try { a.sendPasswordResetEmail(email.trim()).await(); _state.value = _state.value.copy(accountMessage = "Password reset email sent to ${email.trim()}.") }
+        catch (e: Exception) { _state.value = _state.value.copy(accountMessage = friendly(e)) }
+    }
+
+    /** Saves [json] (gzip + base64, split into ≤700 KB parts) to profiles/{uid}/backup. Only for signed-in accounts. */
+    suspend fun uploadBackup(json: String): Boolean {
+        val d = db ?: return false
+        if (_state.value.email == null || uid.isBlank()) return false
+        return try {
+            val bytes = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write(json.toByteArray()) } }.toByteArray()
+            val text = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            val parts = text.chunked(700_000)
+            val col = d.collection("profiles").document(uid).collection("backup")
+            val now = System.currentTimeMillis()
+            val batch = d.batch()
+            parts.forEachIndexed { i, p -> batch.set(col.document("part$i"), mapOf("data" to p)) }
+            batch.set(col.document("meta"), mapOf("parts" to parts.size, "updatedAt" to now, "device" to android.os.Build.MODEL))
+            batch.commit().await()
+            _state.value = _state.value.copy(lastBackupAt = now)
+            true
+        } catch (e: Exception) { _state.value = _state.value.copy(accountMessage = "Backup failed: ${friendly(e)}"); false }
+    }
+
+    suspend fun downloadBackup(): String? {
+        val d = db ?: return null
+        return try {
+            val col = d.collection("profiles").document(uid).collection("backup")
+            val meta = col.document("meta").get().await()
+            val n = meta.getLong("parts")?.toInt() ?: return null
+            val sb = StringBuilder()
+            for (i in 0 until n) sb.append(col.document("part$i").get().await().getString("data").orEmpty())
+            val text = sb.toString()
+            val bytes = android.util.Base64.decode(text, android.util.Base64.NO_WRAP)
+            java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes().toString(Charsets.UTF_8) }
+        } catch (e: Exception) { _state.value = _state.value.copy(accountMessage = "Couldn't read your backup: ${friendly(e)}"); null }
     }
 
     private fun subscribe() {

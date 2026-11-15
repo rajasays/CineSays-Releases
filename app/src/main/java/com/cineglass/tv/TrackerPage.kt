@@ -52,7 +52,7 @@ private fun TrackButton(text:String, active:Boolean=false, modifier:Modifier=Mod
     }
 }
 @Composable
-fun CineTrackerPage(vm:TrackerViewModel){
+fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _, _ -> }){
     val state by vm.ui.collectAsState()
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri: Uri?->uri?.let(vm::prepare)}
     val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){ok->vm.setReminders(ok)}
@@ -63,13 +63,14 @@ fun CineTrackerPage(vm:TrackerViewModel){
     var showSearch by remember { mutableStateOf(false) }
     var weekOffset by remember { mutableIntStateOf(0) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var letter by remember { mutableStateOf<Char?>(null) } // My Shows A–Z filter
     BackHandler(state.chosen != null || state.tab != TRACKER_HOME_TAB) {
         if(state.chosen != null) vm.closeShow() else vm.selectTab(TRACKER_HOME_TAB)
     }
     val today=LocalDate.now()
     val dateFmt=remember{DateTimeFormatter.ofPattern("MMM d")}
     val monday=today.minusDays((today.dayOfWeek.value-1).toLong())
-    val upNext = remember(state.releases) { upNextFrom(state.releases, today) }
+    val upNext = remember(state.releases, state.continueWatching) { mergeUpNext(upNextFrom(state.releases, today), state.continueWatching) }
     val thisWeek = state.releases.count { runCatching{val d=LocalDate.parse(it.episode.airDate);!d.isBefore(today)&&d.isBefore(today.plusDays(7))}.getOrDefault(false)}
     Column(Modifier.fillMaxWidth().background(Cs.bg),verticalArrangement=Arrangement.spacedBy(16.dp)){
         // Header: title, tabs and the three numbers that matter, on one line.
@@ -83,9 +84,16 @@ fun CineTrackerPage(vm:TrackerViewModel){
             TrackerNumber("${state.stats.streak}", "day streak")
         }
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-            listOf(TRACKER_HOME_TAB to TRACKER_HOME_TAB, "Calendar" to "Calendar & Releases", "My Shows · ${state.shows.count{it.followed}}" to "My Shows",
-                "Timeline" to "Release Timeline", "Reminders" to "Reminders").forEach{ (label, tab) -> CsChip(label, state.tab==tab){ vm.selectTab(tab) } }
+            listOf(TRACKER_HOME_TAB to TRACKER_HOME_TAB, "My Shows · ${state.shows.count{it.followed}}" to "My Shows", "Movies · ${state.stats.movies}" to "Movies",
+                "+ Add shows" to "Add shows", "Calendar" to "Calendar & Releases", "Timeline" to "Release Timeline", "Reminders" to "Reminders")
+                .forEach{ (label, tab) -> CsChip(label, state.tab==tab, compact = true){ vm.selectTab(tab) } }
         }
+        // One import for both services: the importer recognises a TV Time or BingeBoxd ZIP by its files.
+        if (state.tab in listOf(TRACKER_HOME_TAB, "My Shows", "Movies") && state.chosen == null && state.preview == null)
+            Row(verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                CsButton("⇧ Import from TV Time or BingeBoxd") { picker.launch(arrayOf("application/zip","application/x-zip-compressed","application/octet-stream")) }
+                Text("Use the ZIP export from either app. Duplicates are skipped.", color = Cs.textMuted, fontSize = 12.sp)
+            }
         if(state.tab == "My Shows" && state.chosen == null) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically) {
                 TrackButton(if(showSearch) "Close Search" else "⌕ Search TV Shows", active=showSearch) { showSearch=!showSearch; if(!showSearch) vm.searchShows("") }
@@ -113,7 +121,7 @@ fun CineTrackerPage(vm:TrackerViewModel){
         if(state.matchStatus.isNotBlank()) Text(state.matchStatus,color=Color(0xFF90CCFF),fontSize=12.sp)
         state.preview?.let{preview->
             TrackPanel(Modifier.fillMaxWidth()){
-                Text("TV Time import preview",fontWeight=FontWeight.Bold,color=trackerWhite,fontSize=19.sp)
+                Text("Import preview",fontWeight=FontWeight.Bold,color=trackerWhite,fontSize=19.sp)
                 Text("${preview.format} · ${preview.shows} shows · ${preview.watchedEpisodes} watched episodes · ${preview.watchedMovies} movies",color=trackerMuted)
                 preview.warnings.forEach{Text(it,color=Color(0xFFFFCF88),fontSize=12.sp)}
                 Text("Import merges with existing tracking data. Nothing is uploaded to Firebase.",color=trackerWhite,fontSize=12.sp)
@@ -224,11 +232,35 @@ fun CineTrackerPage(vm:TrackerViewModel){
                         textStyle=androidx.compose.ui.text.TextStyle(color=trackerWhite,fontSize=17.sp),decorationBox={inner->Box{if(addTitle.isBlank()) Text("Show title",color=trackerMuted);inner()}})
                     TrackButton("Follow"){vm.addShow(addTitle);addTitle="";addExpanded=false}
                 }
-                state.shows.chunked(3).forEach{group->Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
+                // A–Z: pick a letter to jump to the series starting with it (# = digits/symbols).
+                val letters = remember(state.shows) { state.shows.map { s -> s.title.trim().firstOrNull()?.uppercaseChar()?.let { if (it in 'A'..'Z') it else '#' } ?: '#' }.toSet() }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CsChip("All", letter == null, compact = true) { letter = null }
+                    ("#" + ('A'..'Z').joinToString("")).forEach { ch ->
+                        if (ch in letters) CsChip(ch.toString(), letter == ch, compact = true) { letter = ch }
+                        else Text(ch.toString(), Modifier.padding(horizontal = 8.dp, vertical = 6.dp), color = Cs.line, fontSize = 13.sp)
+                    }
+                }
+                val shown = state.shows.filter { s -> letter == null || (s.title.trim().firstOrNull()?.uppercaseChar()?.let { if (it in 'A'..'Z') it else '#' } ?: '#') == letter }
+                Text(if (letter == null) "${shown.size} series" else "${shown.size} series starting with $letter", color = Cs.textMuted, fontSize = 13.sp)
+                val perRow = if (LocalCompact.current) 1 else 3
+                shown.chunked(perRow).forEach{group->Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
                     group.forEach{show->TrackerShowCard(show,Modifier.weight(1f)){vm.selectShow(show)}}
-                    repeat(3-group.size){Spacer(Modifier.weight(1f))}
+                    repeat(perRow-group.size){Spacer(Modifier.weight(1f))}
                 }}
             }
+            "Movies" -> {
+                if (state.movies.isEmpty()) TrackerEmpty("No watched movies yet. Use “✓ Watched” on any movie's details, or import from TV Time / BingeBoxd.")
+                else {
+                    Text("${state.stats.movies} movies watched · newest first", color = Cs.textMuted, fontSize = 13.sp)
+                    CsPosterGrid(state.movies.map { m -> TitleItem(id = m.tmdbId, title = m.title, poster = m.poster, mediaType = "movie", releaseDate = m.watchedAt.take(10)) }
+                        .filter { it.id > 0 } , posterWidth = 120.dp) { openTitle("movie", it.id) }
+                    val unmatched = state.movies.count { it.tmdbId == 0 }
+                    if (unmatched > 0) Text("$unmatched imported movies have no TMDB match yet and aren't shown.", color = Cs.textMuted, fontSize = 12.sp)
+                }
+                Unit
+            }
+            "Add shows" -> AddShowsPanel(state, vm)
             "Release Timeline"->{
                 TrackPanel(Modifier.fillMaxWidth()){
                     TrackerSectionTitle("Coming up on your followed series")
@@ -280,34 +312,43 @@ fun CineTrackerPage(vm:TrackerViewModel){
             }
         }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-        Column(Modifier.weight(1.6f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val compact = LocalCompact.current
+    CsTwoPane(gap = 22.dp, leftWeight = 1.6f, left = { paneMod ->
+        Column(paneMod, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CsSectionTitle("Continue watching")
             if (state.loading && upNext.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cs.accent)
             if (!state.loading && upNext.isEmpty()) {
-                Text(if (state.shows.none { it.followed }) "You're not following any shows yet. Follow shows under My Shows, or import your TV Time history."
-                     else "You're all caught up on recent episodes.", color = Cs.textSoft, fontSize = 15.sp)
+                Text(if (state.shows.none { it.followed }) "You're not following any shows yet. Pick the shows you watch, or import your history from TV Time or BingeBoxd."
+                     else "You're all caught up.", color = Cs.textSoft, fontSize = 15.sp)
                 if (state.shows.none { it.followed }) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CsButton("Follow shows", primary = true) { vm.selectTab("My Shows") }
-                    CsButton("Import from TV Time") { onImport() }
+                    CsButton("Build my tracker", primary = true) { vm.selectTab("Add shows") }
+                    CsButton("Import") { onImport() }
                 }
             }
+            if (upNext.isNotEmpty()) Text("${upNext.size} shows: new episodes first, then shows you're partway through", color = Cs.textMuted, fontSize = 12.sp)
             upNext.forEach { e ->
                 Row(Modifier.fillMaxWidth().border(1.dp, Cs.line, RoundedCornerShape(14.dp)).background(Cs.surface, RoundedCornerShape(14.dp)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     AsyncImage(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w185$it" },
-                        null, Modifier.size(120.dp, 68.dp).clip(RoundedCornerShape(9.dp)).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
+                        null, Modifier.size(if (compact) 88.dp else 120.dp, if (compact) 50.dp else 68.dp).clip(RoundedCornerShape(9.dp)).background(Cs.surfaceHigh), contentScale = ContentScale.Crop)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(e.show, color = Cs.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("S${e.episode.season} E${e.episode.number} · ${e.episode.name}", color = Cs.textSoft, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(e.detail, color = Cs.textMuted, fontSize = 12.sp)
+                        if (compact) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CsChip("✓ Watched", false, compact = true) { vm.mark(e.show, e.episode.season, e.episode.number, true) }
+                            CsChip("Open", false, compact = true) { state.shows.firstOrNull { it.title == e.show }?.let(vm::selectShow) }
+                        }
                     }
-                    CsButton("✓ Watched", primary = true) { vm.mark(e.show, e.episode.season, e.episode.number, true) }
-                    CsButton("Open") { state.shows.firstOrNull { it.title == e.show }?.let(vm::selectShow) }
+                    if (!compact) {
+                        CsButton("✓ Watched", primary = true) { vm.mark(e.show, e.episode.season, e.episode.number, true) }
+                        CsButton("Open") { state.shows.firstOrNull { it.title == e.show }?.let(vm::selectShow) }
+                    }
                 }
             }
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    }, right = { paneMod ->
+        Column(paneMod, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CsSectionTitle("Coming soon")
             val soon = state.releases.filter { r -> runCatching { LocalDate.parse(r.episode.airDate).isAfter(today) }.getOrDefault(false) }.take(6)
             CsPanel(Modifier.fillMaxWidth()) {
@@ -333,7 +374,7 @@ fun CineTrackerPage(vm:TrackerViewModel){
                 CsChip("Match now", false) { vm.matchAllShows() }
             }
         }
-    }
+    })
 }
 
 @Composable private fun TrackerStat(label:String,value:String){Column{Text(label,color=trackerMuted,fontSize=12.sp);Text(value,color=trackerWhite,fontSize=19.sp,fontWeight=FontWeight.Bold)}}
