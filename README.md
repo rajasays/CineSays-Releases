@@ -1,6 +1,6 @@
 # CineSays for Android TV
 
-A movie & TV companion for **Google TV and Android TV**: see what's new on the services you pay for,
+A movie & TV companion for **Google TV, Android TV and Android phones**: see what's new on the services you pay for,
 find where to watch anything across several countries, track episodes, spin a mood-based roulette
 when you can't decide, and swap picks with friends.
 
@@ -24,6 +24,15 @@ Protect may ask you to confirm the install.
 > **Had v1.0 installed?** Version 1.2 is signed with a new key, so uninstall the old CineSays first,
 > then install 1.2. From 1.2 onwards, updates install over the top and keep your data.
 
+### On an Android phone or tablet
+Open the [latest release](https://github.com/rajasays/CineSays-Releases/releases/latest) in your phone's browser,
+tap **CineSays.apk**, and allow your browser to install apps when asked.
+
+### Keep your data on every device
+In **Settings › Account & sync**, create an account (email + password) on your first device. On any other
+TV or phone, sign in with the same account: your tracker, watched movies, watchlist, likes, services and
+friends come with you.
+
 ## Updates
 
 CineSays checks this page for new versions. When one is out, you'll see **⇩** with the version number
@@ -38,7 +47,9 @@ to allow CineSays to install apps. Your watchlist, services and Tracker history 
   region, with a button that opens the streaming app.
 - **My Services:** Netflix, Prime Video, Max, Disney+, Apple TV+, Zee5, JioHotstar, MUBI and more,
   plus free-with-ads Tubi, Pluto TV and Plex.
-- **Tracker:** follow shows, mark episodes watched, see what's airing; imports your TV Time history.
+- **Tracker:** follow shows, mark episodes and movies watched, see what's airing; import from TV Time or BingeBoxd,
+  or build your tracker by picking shows.
+- **Recommended for you:** based on what you ♥ like, your watchlist and what you watch.
 - **Roulette:** pick a mood and length and spin; it shows where to watch the result.
 - **Friends:** add friends with a code and recommend titles to each other.
 
