@@ -102,11 +102,11 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
         if (state.tab in listOf(TRACKER_HOME_TAB, "My Shows", "Movies") && state.chosen == null && state.preview == null)
             Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                 CsButton(if (narrow) "⇧ Import" else "⇧ Import from TV Time or BingeBoxd") { picker.launch(arrayOf("application/zip","application/x-zip-compressed","application/octet-stream")) }
-                if (state.imports.isNotEmpty()) CsButton(if (manageImports) "Close" else "Manage imports") { manageImports = !manageImports; confirmRemove = null }
+                if (state.imports.isNotEmpty() || state.shows.isNotEmpty() || state.movies.isNotEmpty()) CsButton(if (manageImports) "Close" else if (state.imports.isNotEmpty()) "Manage imports" else "Manage data") { manageImports = !manageImports; confirmRemove = null }
                 if (!LocalCompact.current) Text("Use the ZIP export from either app. Duplicates are skipped.", color = Cs.textMuted, fontSize = 12.sp)
             }
         // Remove an import entirely (two presses, because it can't be undone).
-        if (manageImports && state.imports.isNotEmpty() && state.chosen == null) CsPanel(Modifier.fillMaxWidth()) {
+        if (manageImports && state.chosen == null) CsPanel(Modifier.fillMaxWidth()) {
             Text("Imported history", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             Text("Removing an import deletes the shows, episodes and movies it added. Anything you marked yourself in CineSays stays.",
                 color = Cs.textSoft, fontSize = 13.sp)
@@ -132,7 +132,25 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                     info(Modifier.weight(1f)); actions()
                 }
             }
-            if (confirmRemove != null) Text("This can't be undone. You could import the ZIP again later.", color = Cs.warn, fontSize = 12.sp)
+            if (state.imports.isEmpty()) Text("No imported history left on this device.", color = Cs.textMuted, fontSize = 13.sp)
+            // Stronger options: every import at once, or a completely fresh tracker.
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (state.imports.size > 1) {
+                    if (confirmRemove == "all") {
+                        CsButton("Yes, remove all imports", primary = true) { vm.removeImport("all"); confirmRemove = null }
+                        CsButton("Cancel") { confirmRemove = null }
+                    } else CsButton("Remove all imported history") { confirmRemove = "all" }
+                }
+                if (confirmRemove == "everything") {
+                    CsButton("Yes, delete all tracker data", primary = true) { vm.removeImport("everything"); confirmRemove = null }
+                    CsButton("Cancel") { confirmRemove = null }
+                } else CsButton("Clear all tracker data") { confirmRemove = "everything" }
+            }
+            Text("Signed in? Removals are saved to your account, and your other devices apply them when they next sync.",
+                color = Cs.textMuted, fontSize = 12.sp)
+            if (confirmRemove == "everything") Text("This deletes every show, episode and movie in your tracker on all your devices, including ones you marked yourself.",
+                color = Cs.warn, fontSize = 12.sp)
+            else if (confirmRemove != null) Text("This can't be undone. You could import the ZIP again later.", color = Cs.warn, fontSize = 12.sp)
         }
         if(state.tab == "My Shows" && state.chosen == null) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically) {

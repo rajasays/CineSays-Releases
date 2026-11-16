@@ -160,7 +160,7 @@ fun DetailsScreen(
     item: TitleItem, state: ScreenState, myProviders: Set<Int>, inTracker: Boolean, backFocus: FocusRequester, context: Context,
     onBack: () -> Unit, onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onOpenSimilar: (TitleItem) -> Unit,
     liked: Boolean = false, onLike: () -> Unit = {}, movieWatched: Boolean = false, onMovieWatched: (Boolean) -> Unit = {},
-    onPerson: (CastMember) -> Unit = {}
+    onPerson: (CastMember) -> Unit = {}, onPlayTrailer: (String) -> Unit = {}, onWatchFree: (FreeFilm) -> Unit = {}
 ) {
     val compact = LocalCompact.current
     val regions = state.regions.sorted()
@@ -217,10 +217,10 @@ fun DetailsScreen(
                         RatingTile("Rotten Tomatoes", state.rottenTomatoes ?: "—")
                     }
                     Text(item.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 780.dp))
-                    if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched)
+                    if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree)
                 }
             }
-            if (compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched)
+            if (compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree)
             if (compact) { wherePanel(Modifier.fillMaxWidth()); castRow(Modifier.fillMaxWidth()) }
             else Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) { wherePanel(Modifier.weight(1.25f)); castRow(Modifier.weight(1f)) }
             if (state.similar.isNotEmpty()) CsPosterRow("More like this", state.similar, onClick = onOpenSimilar)
@@ -285,11 +285,15 @@ fun PersonScreen(person: Person, busy: Boolean, firstFocus: FocusRequester, onBa
 @Composable
 private fun DetailActions(
     item: TitleItem, state: ScreenState, best: Pair<Provider, String>?, inTracker: Boolean, liked: Boolean, movieWatched: Boolean, context: Context,
-    onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onLike: () -> Unit, onMovieWatched: (Boolean) -> Unit
+    onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onLike: () -> Unit, onMovieWatched: (Boolean) -> Unit,
+    onPlayTrailer: (String) -> Unit, onWatchFree: (FreeFilm) -> Unit
 ) {
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (best != null) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
-        state.trailer?.let { key -> CsButton("▶ Trailer", primary = best == null) { openUrl(context, "https://www.youtube.com/watch?v=$key") } }
+        // Free, legal copy (public domain / openly licensed): plays right here.
+        state.freeMatch?.let { f -> CsButton("▶ Watch free in CineSays", primary = true) { onWatchFree(f) } }
+        // Trailer plays in-app (YouTube's embedded player).
+        state.trailer?.let { key -> CsButton("▶ Trailer", primary = best == null && state.freeMatch == null) { onPlayTrailer(key) } }
         CsButton(if (liked) "♥ Liked" else "♡ Like") { onLike() }
         CsButton(if (item.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onToggleWatchlist() }
         if (item.kind == "movie" && !state.detailBusy) CsButton(if (movieWatched) "✓ Watched" else "Mark watched") { onMovieWatched(!movieWatched) }
@@ -352,6 +356,7 @@ fun DiscoverScreen(
     val services = buildList {
         add("Any" to "")
         if (state.myServices.isNotEmpty()) add("★ My services" to MY_SERVICES_PROVIDER)
+        add("Free (any)" to FREE_PROVIDER)
         addAll(listOf("Netflix" to "8", "Prime" to "9|119", "Max" to "1899", "Disney+" to "337", "Apple TV+" to "350",
             "Zee5" to "232", "Tubi (free)" to "73", "Pluto TV (free)" to "300", "Plex (free)" to "538"))
     }

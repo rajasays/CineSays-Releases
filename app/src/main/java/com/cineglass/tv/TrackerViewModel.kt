@@ -73,7 +73,9 @@ data class TrackerUiState(
     val picker: List<TitleItem> = emptyList(),
     val pickerBusy: Boolean = false,
     /** Source.TVTIME / Source.BINGEBOXD -> what that import added (empty imports are omitted). */
-    val imports: Map<String, ImportCounts> = emptyMap()
+    val imports: Map<String, ImportCounts> = emptyMap(),
+    /** Bumped after imports/removals so the app pushes the change to the cloud right away. */
+    val dataVersion: Int = 0
 )
 
 /** Up Next = recent releases you haven't watched, then shows you're partway through. One card per show. */
@@ -168,6 +170,7 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
                 _ui.value=_ui.value.copy(preview=null,loading=false,matchStatus="",
                     message="Imported ${result.shows} shows, ${result.watchedEpisodes} watched episodes and ${result.watchedMovies} movies" +
                         result.warnings.joinToString("") { ". $it" })
+                _ui.value=_ui.value.copy(dataVersion=_ui.value.dataVersion+1)
                 refresh()
                 loadReleases(force = true)
             } catch(e:Exception) { _ui.value=_ui.value.copy(loading=false,matchStatus="",message="Import failed: ${e.message}") }
@@ -175,13 +178,22 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
     }
     fun dismissPreview() { _ui.value=_ui.value.copy(preview=null) }
 
-    /** Removes everything a TV Time or BingeBoxd import added; episodes and movies you marked yourself stay. */
+    /**
+     * Removes an import. [source]: Source.TVTIME / Source.BINGEBOXD; "all" removes every import;
+     * "everything" clears all tracker data. The removal is recorded so other devices apply it on sync.
+     */
     fun removeImport(source: String) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(loading = true)
-            withContext(Dispatchers.IO) { store.removeImport(source) }
-            _ui.value = _ui.value.copy(loading = false, chosen = null, continueWatching = emptyList(),
-                message = "Removed your ${if (source == Source.BINGEBOXD) "BingeBoxd" else "TV Time"} import")
+            withContext(Dispatchers.IO) {
+                when (source) { "all" -> store.removeAllImports(); "everything" -> store.clearAll(); else -> store.removeImport(source) }
+            }
+            _ui.value = _ui.value.copy(loading = false, chosen = null, continueWatching = emptyList(), releases = emptyList(),
+                dataVersion = _ui.value.dataVersion + 1,
+                message = when (source) {
+                    "all" -> "Removed all imported history"; "everything" -> "Cleared all tracker data"
+                    Source.BINGEBOXD -> "Removed your BingeBoxd import"; else -> "Removed your TV Time import"
+                } + ". Other devices will follow on their next sync.")
             refresh()
             loadReleases(force = true)
         }
@@ -249,7 +261,11 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
 
     // ── Backup / restore (Account sync) ──
     fun exportData(): String = store.exportJson()
-    suspend fun importData(json: String) { withContext(Dispatchers.IO) { store.importJson(json) }; refresh(); loadReleases(force = true) }
+    suspend fun importData(json: String) {
+        withContext(Dispatchers.IO) { store.importJson(json) }
+        _ui.value = _ui.value.copy(continueWatching = emptyList())
+        refresh(); loadReleases(force = true)
+    }
     fun addShow(title:String) {
         if(title.isBlank())return
         viewModelScope.launch(Dispatchers.IO) { store.setFollowed(title,true);withContext(Dispatchers.Main){refresh()} }

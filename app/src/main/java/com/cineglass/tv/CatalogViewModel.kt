@@ -60,6 +60,8 @@ val FREE_PROVIDER_IDS: Set<Int> = STREAMING_SERVICES.filter { it.free }.flatMap 
 private const val MY_MONETIZATION = "flatrate|free|ads"
 /** Sentinel provider value meaning "whatever the user subscribes to"; resolved at request time. */
 const val MY_SERVICES_PROVIDER = "mine"
+/** Sentinel provider value meaning "free on any service (with ads or not)". */
+const val FREE_PROVIDER = "free"
 
 /** A home/browse row. [kind] lets the Movies and TV tabs filter rows without string matching on titles. */
 data class CatalogSection(val title: String, val kind: String, val items: List<TitleItem>)
@@ -89,7 +91,13 @@ data class ScreenState(
     /** ref -> "Because you liked X" */
     val recommendedWhy: Map<String, String> = emptyMap(),
     /** Actor page shown over Details; [personBusy] while it loads. */
-    val person: Person? = null, val personBusy: Boolean = false
+    val person: Person? = null, val personBusy: Boolean = false,
+    /** In-app player (trailer, live channel or public-domain film), shown full screen. */
+    val playing: Playable? = null, val playerBusy: Boolean = false,
+    /** Free tab: public-domain classics (Internet Archive) and free-with-ads titles (TMDB). */
+    val freeFilms: List<FreeFilm> = emptyList(), val freeTitles: List<TitleItem> = emptyList(), val freeBusy: Boolean = false,
+    /** A free, legal copy of the movie open in Details, if the Internet Archive has one. */
+    val freeMatch: FreeFilm? = null
 )
 
 /** Roulette moods map to TMDB genres (OR-ed) plus a rating floor. Movie genre IDs; TV is mapped. */
@@ -138,6 +146,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun monetizationFor(providerId: String?) = when {
         providerId == null -> null
         providerId == "192" -> "rent"
+        providerId == FREE_PROVIDER -> "free|ads"   // any free / ad-supported service
         providerId == MY_SERVICES_PROVIDER -> MY_MONETIZATION
         providerId.split("|").mapNotNull { it.toIntOrNull() }.all { it in FREE_PROVIDER_IDS } -> "free|ads"
         else -> "flatrate"
@@ -151,8 +160,57 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun myServicesFilter(): String? = myProviderIds().takeIf { it.isNotEmpty() }?.sorted()?.joinToString("|")
 
     /** Turns the [MY_SERVICES_PROVIDER] sentinel into real IDs; passes other values through. */
-    private fun resolveProvider(providerId: String?): String? =
-        if (providerId == MY_SERVICES_PROVIDER) myServicesFilter() else providerId
+    private fun resolveProvider(providerId: String?): String? = when (providerId) {
+        MY_SERVICES_PROVIDER -> myServicesFilter()
+        FREE_PROVIDER -> null // no specific service; the free|ads monetization does the filtering
+        else -> providerId
+    }
+
+    // ── Free watching ──
+    /** Loads the Free tab: public-domain classics and free-with-ads titles in your regions. */
+    fun loadFree() {
+        if (_state.value.freeBusy || (_state.value.freeFilms.isNotEmpty() && _state.value.freeTitles.isNotEmpty())) return
+        viewModelScope.launch {
+            _state.update { it.copy(freeBusy = true) }
+            val films = async { runCatching { FreeFilms.classics() }.getOrDefault(emptyList()) }
+            val titles = async { runCatching { freeWithAds() }.getOrDefault(emptyList()) }
+            _state.update { it.copy(freeFilms = films.await(), freeTitles = titles.await(), freeBusy = false) }
+        }
+    }
+    private suspend fun freeWithAds(): List<TitleItem> = coroutineScope {
+        listOf("movie", "tv").map { k -> async { discoverRegions(k, null, "free|ads") } }.awaitAll()
+            .flatten().filter { it.poster != null }.distinctBy { it.ref }.sortedByDescending { it.popularity }.take(30)
+    }
+    fun play(item: Playable) {
+        if (item !is Playable.Live || item.videoId != null) { _state.update { it.copy(playing = item) }; return }
+        // Live: find the broadcast that is on air now, then embed that video.
+        _state.update { it.copy(playerBusy = true) }
+        viewModelScope.launch {
+            val id = FreeFilms.liveVideoId(item.channelId)
+            _state.update { it.copy(playerBusy = false, playing = item.copy(videoId = id)) }
+        }
+    }
+    fun closePlayer() { _state.update { it.copy(playing = null, playerBusy = false) } }
+    /** Finds the film's video file, then opens the player. */
+    fun playFilm(film: FreeFilm) {
+        _state.update { it.copy(playerBusy = true) }
+        viewModelScope.launch {
+            val url = runCatching { FreeFilms.streamUrl(film.id) }.getOrNull()
+            _state.update { if (url != null) it.copy(playing = Playable.Film(film.title, film, url), playerBusy = false)
+                else it.copy(playerBusy = false, error = "That film isn't available to stream right now.") }
+        }
+    }
+    private var freeMatchJob: Job? = null
+    /** For a movie in Details: is there a free, legal copy we can play in-app? */
+    private fun checkFreeMatch(item: TitleItem) {
+        freeMatchJob?.cancel()
+        _state.update { it.copy(freeMatch = null) }
+        if (item.kind != "movie") return
+        freeMatchJob = viewModelScope.launch {
+            val m = runCatching { FreeFilms.match(item.label, item.year.ifBlank { null }) }.getOrNull()
+            if (_state.value.selected?.ref == item.ref) _state.update { it.copy(freeMatch = m) }
+        }
+    }
 
     // ── Backup / restore (Account sync): watchlist, likes, services and regions ──
     fun exportPrefs(): String = org.json.JSONObject()
@@ -286,7 +344,10 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
                         (movies.await() + shows.await()).sortedByDescending { it.releaseDate ?: it.firstAirDate ?: "" }
                     }
                 }
-            }) + providerRows.flatMap { (name, id) ->
+            }) + listOf(
+                // Free on Tubi / Pluto TV / Plex / YouTube in your regions (these open in their own apps).
+                RowRequest("Free to watch", "free") { freeWithAds() }
+            ) + providerRows.flatMap { (name, id) ->
                 listOf(
                     RowRequest("$name · Movies", "movie") { discoverRegions("movie", id, "flatrate") },
                     RowRequest("$name · TV", "tv") { discoverRegions("tv", id, "flatrate") }
@@ -440,6 +501,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 // A single append_to_response call replaces four sequential round trips.
                 val full = Api.tmdb.fullDetail(item.kind, item.id, key)
+                checkFreeMatch(full.toItem(item.kind)) // free public-domain copy we can play in-app?
                 val regions = _state.value.regions
                 val videos = full.videos?.results.orEmpty()
                 val trailer = videos.firstOrNull { it.site == "YouTube" && it.type == "Trailer" && it.official }

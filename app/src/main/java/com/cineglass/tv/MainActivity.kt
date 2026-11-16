@@ -37,26 +37,63 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.border
 import androidx.compose.ui.focus.onFocusChanged
 
+/** Where an outside request (a notification tap, a launcher shortcut) wants the app to go. */
+data class NavRequest(val tab: String? = null, val showTmdb: Int = 0, val kind: String? = null, val id: Int = 0, val nonce: Long = System.nanoTime())
+
 class MainActivity : ComponentActivity() {
+    private val nav = mutableStateOf<NavRequest?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Api.init(applicationContext)
         // Optional start screen, e.g. `adb shell am start -n com.cineglass.tv/.MainActivity -e tab Roulette`.
         val startTab = intent?.getStringExtra("tab")?.takeIf { it in TABS || it == "Search" || it == "Settings" } ?: "Home"
+        if (savedInstanceState == null) nav.value = navFrom(intent)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = Cs.bg, surface = Cs.surface, primary = Cs.accent, onBackground = Cs.text)) { CineSays(startTab = startTab) }
+            MaterialTheme(colorScheme = darkColorScheme(background = Cs.bg, surface = Cs.surface, primary = Cs.accent, onBackground = Cs.text)) {
+                CineSays(startTab = startTab, nav = nav.value, onNavHandled = { nav.value = null })
+            }
         }
+    }
+
+    // A notification tapped while the app is already open arrives here (launchMode singleTop).
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        nav.value = navFrom(intent)
+    }
+
+    private fun navFrom(i: Intent?): NavRequest? {
+        i ?: return null
+        val show = i.getIntExtra(EXTRA_SHOW_TMDB, 0)
+        val id = i.getIntExtra(EXTRA_TITLE_ID, 0)
+        val kind = i.getStringExtra(EXTRA_TITLE_KIND)
+        val tab = i.getStringExtra("tab")?.takeIf { it in TABS || it == "Search" || it == "Settings" }
+        return if (show > 0 || (id > 0 && kind != null) || tab != null) NavRequest(tab, show, kind, id) else null
+    }
+
+    companion object {
+        private const val EXTRA_SHOW_TMDB = "open_show_tmdb"
+        private const val EXTRA_TITLE_KIND = "open_title_kind"
+        private const val EXTRA_TITLE_ID = "open_title_id"
+        private fun base(ctx: android.content.Context) = Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        /** Opens a tracked series in Tracker (its seasons and episodes). */
+        fun openShowIntent(ctx: android.content.Context, tmdbId: Int) = base(ctx).putExtra(EXTRA_SHOW_TMDB, tmdbId).setAction("open_show_$tmdbId")
+        /** Opens a movie or show's details. */
+        fun openTitleIntent(ctx: android.content.Context, kind: String, id: Int) = base(ctx).putExtra(EXTRA_TITLE_KIND, kind).putExtra(EXTRA_TITLE_ID, id).setAction("open_${kind}_$id")
+        fun openTabIntent(ctx: android.content.Context, tab: String) = base(ctx).putExtra("tab", tab).setAction("open_tab_$tab")
     }
 }
 
 /** Top-level tabs. Movies, TV Shows and Genres are now one Discover screen; Recommendations lives under Friends. */
-private val TABS = listOf("Home", "Discover", "Tracker", "Watchlist", "Roulette", "Friends")
+private val TABS = listOf("Home", "Discover", "Free", "Tracker", "Watchlist", "Roulette", "Friends")
 
 @Composable
-private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Home") {
+private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Home", nav: NavRequest? = null, onNavHandled: () -> Unit = {}) {
     val state by vm.state.collectAsState()
     val tracker: TrackerViewModel = viewModel()
     val trackerUi by tracker.ui.collectAsState()
@@ -112,6 +149,32 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         o.optJSONObject("prefs")?.let { vm.importPrefs(it.toString()) }
         o.optJSONObject("tracker")?.let { tracker.importData(it.toString()) }
     }
+    // Outside requests (notification taps): go to the tab, the tracked show, or the title's details.
+    LaunchedEffect(nav) {
+        val n = nav ?: return@LaunchedEffect
+        n.tab?.let { tab = it }
+        if (n.showTmdb > 0) {
+            tab = "Tracker"; tracker.selectTab(TRACKER_HOME_TAB)
+            // On a cold start the tracker may still be loading its shows.
+            val shows = kotlinx.coroutines.withTimeoutOrNull(8000) { tracker.ui.first { it.shows.isNotEmpty() }.shows } ?: trackerUi.shows
+            shows.firstOrNull { it.tmdbId == n.showTmdb }?.let(tracker::selectShow) ?: vm.selectById("tv", n.showTmdb)
+        }
+        if (n.kind != null && n.id > 0) vm.selectById(n.kind, n.id)
+        onNavHandled()
+    }
+    // Two-way sync for signed-in accounts: on start, pull the cloud backup and merge it (removals and
+    // clears made on other devices apply here), then push the merged result back.
+    LaunchedEffect(socialState.email) {
+        if (socialState.email == null) return@LaunchedEffect
+        social.downloadBackup()?.let { restoreJson(it) }
+        social.uploadBackup(backupJson())
+    }
+    // Push imports/removals/clears right away, so other devices see them on their next sync.
+    LaunchedEffect(trackerUi.dataVersion) {
+        if (trackerUi.dataVersion == 0 || socialState.email == null) return@LaunchedEffect
+        delay(1500)
+        social.uploadBackup(backupJson())
+    }
     // Back up automatically when the app goes to the background (signed-in accounts only, at most every 10 min).
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, socialState.email) {
@@ -131,6 +194,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         when (tab) {
             "Tracker" -> { tracker.refresh(); tracker.loadReleases() }
             "Watchlist" -> vm.loadWatchlist()
+            "Free" -> vm.loadFree()
         }
     }
     LaunchedEffect(tab, browseKind, browseGenre, browseProvider, browseSort, state.regions, state.myServices) {
@@ -206,6 +270,9 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                 "Discover" -> DiscoverScreen(state, browseKind, browseGenre, browseProvider, browseSort,
                     onKind = { browseKind = it }, onGenre = { browseGenre = it }, onProvider = { browseProvider = it }, onSort = { browseSort = it },
                     onSelect = vm::select)
+                // Legal free watching: live channels and public-domain films play in-app; free-with-ads titles open their apps.
+                "Free" -> FreeScreen(state, ctx, onPlayFilm = vm::playFilm,
+                    onPlayLive = { ch -> vm.play(Playable.Live("${ch.name} · Live", ch.youtubeChannelId)) }, onOpenTitle = vm::select)
                 "Tracker" -> CineTrackerPage(tracker) { kind, id -> vm.selectById(kind, id) }
                 "Watchlist" -> {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -264,7 +331,9 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     onRecommend = { recommendingItem = item }, onOpenSimilar = vm::select,
                     liked = item.ref in state.likes, onLike = { vm.toggleLike(item) },
                     movieWatched = item.id in trackerUi.watchedMovieIds, onMovieWatched = { tracker.setMovieWatched(item, it) },
-                    onPerson = vm::openPerson)
+                    onPerson = vm::openPerson,
+                    onPlayTrailer = { key -> vm.play(Playable.Trailer("Trailer · ${item.label}", key)) },
+                    onWatchFree = { film -> vm.playFilm(film) })
             }
         }
     }
@@ -276,6 +345,19 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             CompositionLocalProvider(LocalCompact provides (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 700)) {
                 PersonScreen(person, state.personBusy, personFocus, onBack = vm::closePerson) { title -> vm.closePerson(); vm.select(title) }
             }
+        }
+    }
+    // In-app player: its own full-screen window above everything; Back or "← Close" returns.
+    state.playing?.let { item ->
+        Dialog(onDismissRequest = vm::closePlayer, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            PlayerScreen(item, onClose = vm::closePlayer)
+        }
+    }
+    if (state.playerBusy) Dialog(onDismissRequest = vm::closePlayer) {
+        Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
+            Text("Getting the film ready…", color = Cs.text)
         }
     }
 }
@@ -304,14 +386,16 @@ private fun SettingsScreen(
     AboutCredit(updateState.currentVersion)
 }
 
-/** "Developed by" credit at the end of Settings. */
+/** "Imagined by" credit at the end of Settings. */
 @Composable
 private fun AboutCredit(version: String) {
     Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Three technologists side by side: friends sitting together with their laptops.
-        Text("🧑‍💻👨‍💻🧑‍💻", fontSize = 40.sp)
-        Text("Developed by Khanpur Boys", color = Cs.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        // Khanpur Boys logo: three friends behind one shared laptop.
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.res.painterResource(R.drawable.khanpur_logo),
+            contentDescription = "Khanpur Boys logo", modifier = Modifier.size(96.dp))
+        Text("Imagined by Khanpur Boys", color = Cs.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Text("CineSays $version", color = Cs.textMuted, fontSize = 13.sp)
     }
 }

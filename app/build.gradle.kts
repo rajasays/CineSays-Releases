@@ -21,8 +21,8 @@ android {
         applicationId = "com.cineglass.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.3.1"
+        versionCode = 15
+        versionName = "1.4.0"
         buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "OMDB_API_KEY", "\"${omdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseApiKey}\"")
@@ -66,6 +66,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // In-app player for public-domain films (Internet Archive): play/pause/seek with a TV remote or touch.
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
     implementation("org.apache.commons:commons-csv:1.11.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")

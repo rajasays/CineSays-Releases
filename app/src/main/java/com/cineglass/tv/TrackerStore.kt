@@ -22,7 +22,7 @@ object Source { const val MANUAL = "manual"; const val TVTIME = "tvtime"; const 
 /** What one import added: shows that came from it, and its episode and movie records. */
 data class ImportCounts(val shows: Int, val episodes: Int, val movies: Int) { val isEmpty get() = shows + episodes + movies == 0 }
 
-class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_tracker.db", null, 3) {
+class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_tracker.db", null, 4) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE shows (title_key TEXT PRIMARY KEY,title TEXT NOT NULL,tvtime_id TEXT NOT NULL DEFAULT '',followed INTEGER NOT NULL DEFAULT 1,archived INTEGER NOT NULL DEFAULT 0,followed_at TEXT NOT NULL DEFAULT '',tmdb_id INTEGER NOT NULL DEFAULT 0,poster TEXT)")
         db.execSQL("CREATE TABLE watched (title_key TEXT NOT NULL,season INTEGER NOT NULL,episode INTEGER NOT NULL,watched_at TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT 'manual',PRIMARY KEY(title_key,season,episode))")
@@ -46,7 +46,28 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
             db.execSQL("UPDATE movies SET source='bingeboxd' WHERE watched_at LIKE '%T%Z' AND tmdb_id>0")
             db.execSQL("UPDATE movies SET source='tvtime' WHERE source='manual' AND (length(watched_at)<>10 OR tmdb_id=0)")
         }
+        // v4: re-tag by each record's own timestamp, not its show. A show imported from TV Time and
+        // BingeBoxd got all its episodes tagged "tvtime" in v3, so "Remove BingeBoxd" missed them.
+        // BingeBoxd times are ISO (2018-04-25T11:55:58.000Z); TV Time's use a space; CineSays marks are yyyy-MM-dd.
+        if (oldVersion < 4) {
+            db.execSQL("UPDATE watched SET source='bingeboxd' WHERE watched_at LIKE '____-__-__T%Z'")
+            db.execSQL("UPDATE watched SET source='tvtime' WHERE source<>'bingeboxd' AND length(watched_at)<>10")
+            db.execSQL("UPDATE movies SET source='bingeboxd' WHERE watched_at LIKE '____-__-__T%Z'")
+            db.execSQL("UPDATE movies SET source='tvtime' WHERE source<>'bingeboxd' AND (length(watched_at)<>10 OR tmdb_id=0)")
+        }
     }
+
+    // ── Import/removal history, so removals reach every device ──
+    // {"tvtime":{"imported":ms,"removed":ms}, "bingeboxd":{…}, "_cleared": ms}
+    private fun importState(): org.json.JSONObject = runCatching { org.json.JSONObject(preference("import_state") ?: "{}") }.getOrDefault(org.json.JSONObject())
+    private fun saveImportState(o: org.json.JSONObject) = setPreference("import_state", o.toString())
+    private fun stamp(source: String, field: String, at: Long = System.currentTimeMillis()) {
+        val s = importState(); val e = s.optJSONObject(source) ?: org.json.JSONObject()
+        s.put(source, e.put(field, at)); saveImportState(s)
+    }
+    /** Call when an import is committed: it outranks any earlier removal of that source. */
+    fun noteImported(source: String) = stamp(source, "imported")
+    val clearedAt: Long get() = importState().optLong("_cleared", 0)
 
     /** What each import contributed, for the "Remove imported history" panel. */
     fun importCounts(source: String): ImportCounts {
@@ -60,7 +81,7 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
      * Deletes everything one import added: its episode and movie records, and the shows it created
      * (unless you've marked episodes of that show yourself; those shows stay, unlinked from the import).
      */
-    fun removeImport(source: String) {
+    fun removeImport(source: String, record: Boolean = true) {
         val db = writableDatabase
         val showFilter = if (source == Source.BINGEBOXD) "tvtime_id LIKE 'bingeboxd:%'" else "tvtime_id<>'' AND tvtime_id NOT LIKE 'bingeboxd:%'"
         db.beginTransaction()
@@ -69,8 +90,43 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
             db.execSQL("DELETE FROM movies WHERE source=?", arrayOf(source))
             db.execSQL("DELETE FROM shows WHERE $showFilter AND title_key NOT IN (SELECT DISTINCT title_key FROM watched)")
             db.execSQL("UPDATE shows SET tvtime_id='' WHERE $showFilter")
+            // Shows left with no episodes and never followed by hand are import leftovers too.
+            db.execSQL("DELETE FROM shows WHERE followed=0 AND title_key NOT IN (SELECT DISTINCT title_key FROM watched)")
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+        if (record) stamp(source, "removed")
+    }
+
+    /** Removes every imported record (TV Time and BingeBoxd). Your own marks stay. */
+    fun removeAllImports() { removeImport(Source.TVTIME); removeImport(Source.BINGEBOXD) }
+
+    /** Deletes all tracker data: shows, episodes, movies. Settings are kept. Synced as a "clear" to other devices. */
+    fun clearAll(record: Boolean = true) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try { db.execSQL("DELETE FROM watched"); db.execSQL("DELETE FROM movies"); db.execSQL("DELETE FROM shows"); db.setTransactionSuccessful() }
+        finally { db.endTransaction() }
+        if (record) { val s = importState(); s.put("_cleared", System.currentTimeMillis()); saveImportState(s) }
+    }
+
+    /**
+     * Merges another device's import history and applies it: a source removed more recently than it
+     * was imported gets removed here too; a newer "clear" clears this device.
+     * Returns true when this device's data changed.
+     */
+    private fun applyImportState(remote: org.json.JSONObject): Boolean {
+        val local = importState(); var changed = false
+        val remoteCleared = remote.optLong("_cleared", 0)
+        if (remoteCleared > local.optLong("_cleared", 0)) { clearAll(record = false); local.put("_cleared", remoteCleared); changed = true }
+        for (src in listOf(Source.TVTIME, Source.BINGEBOXD)) {
+            val l = local.optJSONObject(src) ?: org.json.JSONObject(); val r = remote.optJSONObject(src) ?: org.json.JSONObject()
+            val imported = maxOf(l.optLong("imported", 0), r.optLong("imported", 0))
+            val removed = maxOf(l.optLong("removed", 0), r.optLong("removed", 0))
+            if (removed > imported && importCounts(src).let { !it.isEmpty }) { removeImport(src, record = false); changed = true }
+            local.put(src, org.json.JSONObject().put("imported", imported).put("removed", removed))
+        }
+        saveImportState(local)
+        return changed
     }
     private fun key(title: String) = title.trim().lowercase(Locale.ROOT)
 
@@ -145,10 +201,24 @@ class TrackerStore(context: Context) : SQLiteOpenHelper(context, "cinesays_track
         readableDatabase.rawQuery("SELECT title,watched_at,tmdb_id,poster,source FROM movies", null).use { c ->
             while (c.moveToNext()) movies.put(org.json.JSONArray().put(c.getString(0)).put(c.getString(1)).put(c.getInt(2)).put(c.getString(3) ?: "").put(c.getString(4)))
         }
-        return root.put("v", 1).put("shows", shows).put("watched", watched).put("movies", movies).toString()
+        return root.put("v", 2).put("exportedAt", System.currentTimeMillis()).put("importState", importState())
+            .put("shows", shows).put("watched", watched).put("movies", movies).toString()
     }
+
+    /**
+     * Merges a backup from another device. Removals and clears recorded in it are applied first;
+     * records are merged unless this device was cleared after that backup was made; then removals
+     * are applied again so merged rows can't bring a removed import back.
+     */
     fun importJson(json: String) {
         val root = org.json.JSONObject(json)
+        val remoteState = root.optJSONObject("importState") ?: org.json.JSONObject()
+        applyImportState(remoteState)
+        if (clearedAt > 0 && root.optLong("exportedAt", 0) in 1 until clearedAt) return // backup predates our clear
+        mergeRows(root)
+        applyImportState(remoteState)
+    }
+    private fun mergeRows(root: org.json.JSONObject) {
         val db = writableDatabase
         db.beginTransaction()
         try {

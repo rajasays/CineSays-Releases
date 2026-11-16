@@ -27,7 +27,7 @@
     </queries>
     <application android:label="CineSays" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="false" android:icon="@drawable/cinesays_launcher" android:roundIcon="@drawable/cinesays_launcher" android:banner="@drawable/cinesays_tv_banner" android:allowBackup="false">
         <!-- No forced orientation: TVs are landscape anyway, phones may rotate. -->
-        <activity android:name=".MainActivity" android:exported="true"
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

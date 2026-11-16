@@ -1,3 +1,12 @@
+# CineSays 1.4.0
+- New Free tab: live news TV (Al Jazeera, DW, France 24, Sky News, ABC News, Bloomberg, euronews, NASA) and public-domain classic films that play right inside CineSays, plus free-with-ads picks from Tubi, Pluto TV and Plex.
+- Watch free in CineSays: public-domain titles (e.g. Night of the Living Dead) get a play button on their details page.
+- Trailers now play inside the app.
+- Home: new "Free to watch" row. Discover: new "Free (any)" service filter.
+- Notifications: tapping a new-episode reminder opens that show.
+- Tracker › Manage data: removing an import now removes it completely, and the removal syncs to your other devices. New "Remove all imported history" and "Clear all tracker data" options.
+- Settings: new Khanpur Boys logo, "Imagined by Khanpur Boys".
+
 # CineSays 1.3.1
 - Tracker › Manage imports: remove a TV Time or BingeBoxd import entirely (its shows, episodes and movies). Episodes and movies you marked yourself are kept. Every record now remembers its source; existing data is tagged on upgrade.
 - Tracker › Up Next: Continue watching sits in its own scrolling box (Coming soon matches its height), so the screen stays even however many shows you're watching.

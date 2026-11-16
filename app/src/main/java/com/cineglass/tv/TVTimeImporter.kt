@@ -130,6 +130,7 @@ class TVTimeImporter(private val context: Context) {
     }
     /** Writes the inspected data. BingeBoxd needs network (TMDB titles); [progress] reports what it is doing. */
     suspend fun commit(store:TrackerStore, progress:(String)->Unit = {}): TrackerImportPreview {
+        store.noteImported(if(isBingeBoxd) Source.BINGEBOXD else Source.TVTIME) // outranks an earlier removal on every device
         if(isBingeBoxd) return commitBingeBoxd(store,progress)
         val db=store.writableDatabase
         db.beginTransaction()

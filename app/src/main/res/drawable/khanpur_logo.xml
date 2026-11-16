@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Khanpur Boys: three friends behind one shared laptop (concept 1). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp"
+    android:viewportWidth="220" android:viewportHeight="220">
+    <path android:strokeColor="#3DA9FF" android:strokeWidth="7"
+        android:pathData="M44,70 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0" />
+    <path android:strokeColor="#FFB547" android:strokeWidth="7"
+        android:pathData="M88,58 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0" />
+    <path android:strokeColor="#3DA9FF" android:strokeWidth="7"
+        android:pathData="M136,70 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0" />
+    <path android:strokeColor="#3DA9FF" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M36,128 C36,104 92,104 92,128" />
+    <path android:strokeColor="#FFB547" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M80,120 C80,92 140,92 140,120" />
+    <path android:strokeColor="#3DA9FF" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M128,128 C128,104 184,104 184,128" />
+    <path android:fillColor="#13263D" android:strokeColor="#F2F7FF" android:strokeWidth="6"
+        android:pathData="M66,128 H154 A8,8 0 0,1 162,136 V174 A8,8 0 0,1 154,182 H66 A8,8 0 0,1 58,174 V136 A8,8 0 0,1 66,128 Z" />
+    <path android:strokeColor="#F2F7FF" android:strokeWidth="8" android:strokeLineCap="round"
+        android:pathData="M40,188 H180" />
+    <path android:strokeColor="#3DA9FF" android:strokeWidth="4" android:strokeLineCap="round"
+        android:pathData="M86,155 l10,-9 m0,18 l-10,-9 M134,146 l-10,9 l10,9 M116,142 l-12,26" />
+</vector>

@@ -27,6 +27,7 @@ class TrackerReminderWorker(private val context: Context, params: androidx.work.
             val date = LocalDate.now().toString()
             val shows = store.allShows().filter { it.followed && !it.archived && it.tmdbId > 0 }.take(50)
             val upcoming = mutableListOf<String>()
+            val airingIds = mutableListOf<Int>()
             var responses = 0
             for (show in shows) {
                 try {
@@ -36,6 +37,7 @@ class TrackerReminderWorker(private val context: Context, params: androidx.work.
                         val ep = if(detail.next?.airDate == date) detail.next else detail.last
                         if(ep != null && !store.isWatched(show.title, ep.season, ep.number)) {
                             upcoming += "${show.title} · S${ep.season}E${ep.number}"
+                            airingIds += show.tmdbId
                         }
                     }
                 } catch (_: Exception) { /* One malformed/unavailable title should not prevent others. */ }
@@ -45,11 +47,17 @@ class TrackerReminderWorker(private val context: Context, params: androidx.work.
                 if(Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(
                     NotificationChannel("cinesays_episodes","CineSays episode releases",NotificationManager.IMPORTANCE_DEFAULT))
                 if(Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED) {
+                    // Tap: one show → that show in Tracker; several → Tracker's Up Next.
+                    val open = if (airingIds.size == 1) MainActivity.openShowIntent(context, airingIds.first())
+                               else MainActivity.openTabIntent(context, "Tracker")
+                    val tap = android.app.PendingIntent.getActivity(context, 32001, open,
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
                     val notification=NotificationCompat.Builder(context,"cinesays_episodes")
                         .setSmallIcon(R.drawable.cinesays_launcher)
-                        .setContentTitle("New episodes today")
+                        .setContentTitle(if (upcoming.size == 1) "New episode today" else "New episodes today")
                         .setContentText(upcoming.take(2).joinToString(" · "))
                         .setStyle(NotificationCompat.BigTextStyle().bigText(upcoming.take(8).joinToString("\n")))
+                        .setContentIntent(tap)
                         .setAutoCancel(true).build()
                     manager.notify(32001,notification)
                     store.setPreference("notified_$date","1")
