@@ -52,8 +52,12 @@ val STREAMING_SERVICES = listOf(
     StreamingService("tubi", "Tubi", listOf(73), free = true),
     StreamingService("pluto", "Pluto TV", listOf(300), free = true),
     StreamingService("plex", "Plex", listOf(538), free = true),
-    StreamingService("youtubefree", "YouTube (free)", listOf(235), free = true)
+    StreamingService("youtubefree", "YouTube (free)", listOf(235), free = true),
+    // Amazon's free-with-ads catalogue (formerly Freevee): the free movies IMDb links to. US, UK and India only.
+    StreamingService("primefree", "Prime Video (free)", listOf(PRIME_FREE_ID), free = true)
 )
+/** TMDB provider "Amazon Prime Video Free with Ads" (not 2100, which is the paid Prime tier with ads). */
+const val PRIME_FREE_ID = 613
 /** Provider IDs whose catalogue is ad-supported, so discovery must ask for free|ads offers. */
 val FREE_PROVIDER_IDS: Set<Int> = STREAMING_SERVICES.filter { it.free }.flatMap { it.providerIds }.toSet()
 /** "My services" can mix paid and free services, so it asks for every no-extra-cost offer type. */
@@ -97,7 +101,11 @@ data class ScreenState(
     /** Free tab: public-domain classics (Internet Archive) and free-with-ads titles (TMDB). */
     val freeFilms: List<FreeFilm> = emptyList(), val freeTitles: List<TitleItem> = emptyList(), val freeBusy: Boolean = false,
     /** A free, legal copy of the movie open in Details, if the Internet Archive has one. */
-    val freeMatch: FreeFilm? = null
+    val freeMatch: FreeFilm? = null,
+    /** Free tab: Amazon's free-with-ads titles (the free movies on IMDb). */
+    val primeFreeTitles: List<TitleItem> = emptyList(),
+    /** Details: the title's IMDb ID, and which of your regions have it free on Prime Video. */
+    val imdbId: String? = null, val primeFreeRegions: List<String> = emptyList()
 )
 
 /** Roulette moods map to TMDB genres (OR-ed) plus a rating floor. Movie genre IDs; TV is mapped. */
@@ -174,11 +182,17 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(freeBusy = true) }
             val films = async { runCatching { FreeFilms.classics() }.getOrDefault(emptyList()) }
             val titles = async { runCatching { freeWithAds() }.getOrDefault(emptyList()) }
-            _state.update { it.copy(freeFilms = films.await(), freeTitles = titles.await(), freeBusy = false) }
+            val prime = async { runCatching { primeFree() }.getOrDefault(emptyList()) }
+            _state.update { it.copy(freeFilms = films.await(), freeTitles = titles.await(), primeFreeTitles = prime.await(), freeBusy = false) }
         }
     }
     private suspend fun freeWithAds(): List<TitleItem> = coroutineScope {
         listOf("movie", "tv").map { k -> async { discoverRegions(k, null, "free|ads") } }.awaitAll()
+            .flatten().filter { it.poster != null }.distinctBy { it.ref }.sortedByDescending { it.popularity }.take(30)
+    }
+    /** Free on Prime Video (Amazon's free-with-ads catalogue) in your regions, best-known first. */
+    private suspend fun primeFree(): List<TitleItem> = coroutineScope {
+        listOf("movie", "tv").map { k -> async { discoverRegions(k, PRIME_FREE_ID.toString(), "free|ads", extra = mapOf("vote_count.gte" to "50")) } }.awaitAll()
             .flatten().filter { it.poster != null }.distinctBy { it.ref }.sortedByDescending { it.popularity }.take(30)
     }
     fun play(item: Playable) {
@@ -495,7 +509,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun select(item: TitleItem) {
         _state.update { it.copy(selected = item, detailBusy = true, providersByRegion = emptyMap(), trailer = null, imdbRating = null, rottenTomatoes = null,
-            cast = emptyList(), similar = emptyList()) }
+            cast = emptyList(), similar = emptyList(), imdbId = null, primeFreeRegions = emptyList()) }
         detailJob?.cancel()
         detailJob = viewModelScope.launch {
             try {
@@ -508,6 +522,9 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
                     ?: videos.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }
                 _state.update { it.copy(selected = full.toItem(item.kind), detailBusy = false,
                     providersByRegion = full.providers?.results.orEmpty().filterKeys { r -> r in regions }, trailer = trailer?.key,
+                    imdbId = full.externalIds?.imdbId?.takeIf { id -> id.startsWith("tt") },
+                    primeFreeRegions = full.providers?.results.orEmpty().filter { (r, p) -> r in regions &&
+                        (p.ads.orEmpty() + p.free.orEmpty()).any { pr -> pr.id == PRIME_FREE_ID } }.keys.sorted(),
                     cast = full.credits?.cast.orEmpty().take(10),
                     similar = full.recommendations?.results.orEmpty().filter { r -> r.poster != null }
                         .map { r -> r.copy(mediaType = r.mediaType ?: item.kind) }.take(12)) }

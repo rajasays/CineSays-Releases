@@ -1,3 +1,9 @@
+# CineSays 1.5.0
+- Free tab: new "Free on Prime Video" row — the free movies and shows IMDb links to (Amazon's free-with-ads catalogue, formerly Freevee). They open in the Prime Video app; an Amazon sign-in is needed, not a Prime subscription. Available in the US, UK and India.
+- Details: "Free on Prime Video" button when a title is free there, marked with its region (e.g. "(US)") when it isn't free in all of yours. Hidden if you already subscribe to Prime Video.
+- Details: new "IMDb ↗" button opens the title on IMDb.
+- Discover: new "Prime Video (free)" service filter; the "Free (any)" filter and Home "Free to watch" row now include it too.
+
 # CineSays 1.4.0
 - New Free tab: live news TV (Al Jazeera, DW, France 24, Sky News, ABC News, Bloomberg, euronews, NASA) and public-domain classic films that play right inside CineSays, plus free-with-ads picks from Tubi, Pluto TV and Plex.
 - Watch free in CineSays: public-domain titles (e.g. Night of the Living Dead) get a play button on their details page.

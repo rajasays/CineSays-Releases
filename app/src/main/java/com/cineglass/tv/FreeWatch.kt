@@ -246,13 +246,18 @@ fun FreeScreen(
         }
 
         // Free with ads (open in their apps)
+        if (state.primeFreeTitles.isNotEmpty()) {
+            CsPosterRow("Free on Prime Video · the free movies on IMDb", state.primeFreeTitles, onClick = onOpenTitle)
+            Text("Free with ads in the US, UK and India; opens in the Prime Video app (an Amazon sign-in is needed, not a Prime subscription).",
+                color = Cs.textMuted, fontSize = 13.sp)
+        }
         if (state.freeTitles.isNotEmpty()) CsPosterRow("Free with ads on Tubi, Pluto TV & Plex", state.freeTitles, onClick = onOpenTitle)
 
         // Free TV apps
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CsSectionTitle("More free TV apps")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                listOf(Provider(300, "Pluto TV (live channels)", null), Provider(73, "Tubi", null), Provider(538, "Plex (live TV)", null), Provider(235, "YouTube", null))
+                listOf(Provider(300, "Pluto TV (live channels)", null), Provider(73, "Tubi", null), Provider(PRIME_FREE_ID, "Prime Video (free)", null),Provider(538, "Plex (live TV)", null), Provider(235, "YouTube", null))
                     .forEach { p -> CsButton("Open ${p.name}") { openProviderApp(context, p, "free TV") } }
             }
         }

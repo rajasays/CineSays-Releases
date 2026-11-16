@@ -484,7 +484,7 @@ private fun AppUpdatesSection(state: UpdateState, updater: UpdateViewModel) {
 fun openProviderApp(context: Context, provider: Provider, title: String) {
     val names = when (provider.id) {
         8 -> listOf("com.netflix.ninja", "com.netflix.mediaclient")
-        9, 119 -> listOf("com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient")
+        9, 119, PRIME_FREE_ID -> listOf("com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient")
         350, 2 -> listOf("com.apple.atve.androidtv.appletv")
         1899, 384 -> listOf("com.wbd.stream", "com.hbo.hbonow")
         192, 3, 235, 188 -> listOf("com.google.android.youtube.tv", "com.google.android.youtube")

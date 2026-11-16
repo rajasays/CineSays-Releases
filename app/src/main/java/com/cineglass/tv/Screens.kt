@@ -289,7 +289,16 @@ private fun DetailActions(
     onPlayTrailer: (String) -> Unit, onWatchFree: (FreeFilm) -> Unit
 ) {
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (best != null) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
+        // Skipped when the main button already opens Prime Video (you subscribe): same app, nothing to add.
+        val primeFree = state.primeFreeRegions.isNotEmpty() && best?.first?.id !in setOf(9, 119, 2100)
+        if (best != null && !(primeFree && best.first.id == PRIME_FREE_ID)) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
+        // Free with ads on Prime Video (the free movies IMDb lists). Marked with its regions when not free in all of yours.
+        if (primeFree) {
+            val where = if (state.primeFreeRegions.size < state.regions.size) " (${state.primeFreeRegions.joinToString(", ")})" else ""
+            CsButton("▶ Free on Prime Video$where", primary = best == null || best.first.id == PRIME_FREE_ID) {
+                openProviderApp(context, Provider(PRIME_FREE_ID, "Prime Video", null), item.label)
+            }
+        }
         // Free, legal copy (public domain / openly licensed): plays right here.
         state.freeMatch?.let { f -> CsButton("▶ Watch free in CineSays", primary = true) { onWatchFree(f) } }
         // Trailer plays in-app (YouTube's embedded player).
@@ -299,6 +308,7 @@ private fun DetailActions(
         if (item.kind == "movie" && !state.detailBusy) CsButton(if (movieWatched) "✓ Watched" else "Mark watched") { onMovieWatched(!movieWatched) }
         if (item.kind == "tv" && !state.detailBusy) CsButton(if (inTracker) "✓ Tracking" else "+ Track episodes") { if (!inTracker) onTrack() }
         CsButton("Recommend") { onRecommend() }
+        state.imdbId?.let { id -> CsButton("IMDb ↗") { openUrl(context, "https://www.imdb.com/title/$id/") } }
     }
 }
 
@@ -358,7 +368,7 @@ fun DiscoverScreen(
         if (state.myServices.isNotEmpty()) add("★ My services" to MY_SERVICES_PROVIDER)
         add("Free (any)" to FREE_PROVIDER)
         addAll(listOf("Netflix" to "8", "Prime" to "9|119", "Max" to "1899", "Disney+" to "337", "Apple TV+" to "350",
-            "Zee5" to "232", "Tubi (free)" to "73", "Pluto TV (free)" to "300", "Plex (free)" to "538"))
+            "Zee5" to "232", "Tubi (free)" to "73", "Prime Video (free)" to "$PRIME_FREE_ID","Pluto TV (free)" to "300", "Plex (free)" to "538"))
     }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
