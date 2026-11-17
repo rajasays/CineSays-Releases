@@ -1,0 +1,11 @@
+[
+  {
+    "id": "ia.open_movies",
+    "name": "Blender open movies",
+    "description": "Creative Commons films from the Blender Foundation: Sintel, Elephants Dream, Big Buck Bunny and more.",
+    "engine": "archive",
+    "query": "subject:(blender) AND collection:(animationandcartoons OR opensource_movies)",
+    "requireLicence": true,
+    "defaultOn": true
+  }
+]

@@ -2,6 +2,7 @@ package com.cineglass.tv
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.Uri
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.annotation.OptIn
@@ -80,14 +81,17 @@ object FreeFilms {
     val api: ArchiveApi by lazy {
         Retrofit.Builder().baseUrl("https://archive.org/").addConverterFactory(GsonConverterFactory.create()).build().create(ArchiveApi::class.java)
     }
-    // The Internet Archive's curated public-domain / openly licensed feature films.
-    // Only items that still hold a playable MP4 (some catalogue entries have had their video removed).
-    private const val SCOPE = "collection:(feature_films) AND mediatype:(movies) AND format:(h.264 OR MPEG4)"
-    // The default classics grid skips exploitation titles; explicit title matches still use SCOPE.
-    private const val CLASSICS = "$SCOPE AND NOT title:(sex) AND NOT subject:(sex OR exploitation OR adult)"
+    // Every archive add-on is searched inside this: videos that still hold a playable MP4 (some catalogue
+    // entries have had their video removed). Licence-restricted add-ons also need a PD / CC licence.
+    private const val PLAYABLE = "mediatype:(movies) AND format:(h.264 OR MPEG4)"
+    private const val LICENSED = "licenseurl:(*publicdomain* OR *creativecommons*)"
+    // Catalogue rows skip exploitation titles; explicit title matches (Watch free on a details page) don't.
+    private const val FAMILY = "NOT title:(sex OR molester) AND NOT subject:(sex OR exploitation OR adult)"
+
+    private fun scope(a: Addon) = "(${a.query}) AND $PLAYABLE" + if (a.requireLicence) " AND $LICENSED" else ""
 
     private fun licence(url: String?): String = when {
-        url == null -> "Public domain (Internet Archive Feature Films)"
+        url == null -> "Public domain"
         "publicdomain" in url -> "Public domain"
         "creativecommons" in url -> "Creative Commons licence"
         else -> "Openly licensed"
@@ -95,15 +99,18 @@ object FreeFilms {
     private fun clean(s: String) = s.lowercase().replace(Regex("\\(\\d{4}\\)"), "").replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
     private fun quote(s: String) = s.replace("\"", " ").replace(":", " ")
 
-    /** Most-watched free classics, for the Free tab. */
-    suspend fun classics(rows: Int = 40): List<FreeFilm> =
-        api.search(CLASSICS, rows = rows).response.docs.filter { !it.title.isNullOrBlank() }
+    /** An archive add-on's most-watched films, for its Free tab row. */
+    suspend fun catalog(a: Addon, rows: Int = 24): List<FreeFilm> =
+        api.search("${scope(a)} AND $FAMILY", rows = rows).response.docs.filter { !it.title.isNullOrBlank() }
             .map { FreeFilm(it.identifier, it.title!!, it.year?.take(4), licence(it.licenseurl)) }
 
-    /** Finds an exact title (+ year when known) match for a TMDB movie, or null. */
-    suspend fun match(title: String, year: String?): FreeFilm? {
+    /** Finds an exact title (+ year when known) match for a TMDB movie across [addons], or null. */
+    suspend fun match(title: String, year: String?, addons: List<Addon>): FreeFilm? {
+        val archive = addons.filter { it.engine == Addons.ARCHIVE }
+        if (archive.isEmpty()) return null
         val want = clean(title)
-        val docs = api.search("title:(\"${quote(title)}\") AND $SCOPE", rows = 10).response.docs
+        val within = archive.joinToString(" OR ") { "(${scope(it)})" }
+        val docs = api.search("title:(\"${quote(title)}\") AND ($within)", rows = 10).response.docs
         return docs.filter { d -> d.title != null && clean(d.title) == want }
             .filter { d -> year.isNullOrBlank() || d.year.isNullOrBlank() || kotlin.math.abs((d.year.take(4).toIntOrNull() ?: 0) - (year.toIntOrNull() ?: 0)) <= 1 }
             .maxByOrNull { it.downloads }
@@ -163,7 +170,12 @@ fun PlayerScreen(item: Playable, onClose: () -> Unit) {
             CsChip("← Close", false, compact = true) { onClose() }
             Text(item.title, color = Cs.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f))
-            if (item is Playable.Film) Text("${item.film.licence} · Internet Archive", color = Cs.textMuted, fontSize = 11.sp, maxLines = 1)
+            if (item is Playable.Film) Text("${item.film.licence} · Internet Archive", color = Cs.textMuted, fontSize = 11.sp, maxLines = 2,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 150.dp))
+        }
+        // Belt and braces: the film player only ever streams from the Internet Archive.
+        if (item is Playable.Film && Uri.parse(item.url).host?.let { it == "archive.org" || it.endsWith(".archive.org") } != true) {
+            Text("This source isn't allowed.", color = Cs.warn, modifier = Modifier.padding(16.dp)); return@Column
         }
         Box(Modifier.fillMaxWidth().weight(1f)) {
             when (item) {
@@ -227,23 +239,29 @@ fun FreeScreen(
                 color = Cs.textSoft, fontSize = 14.sp)
         }
 
-        // Live TV
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Live TV (from enabled live add-ons)
+        if (state.liveChannels.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CsSectionTitle("Live TV · free")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                LIVE_CHANNELS.forEach { ch -> LiveCard(ch) { onPlayLive(ch) } }
+                state.liveChannels.forEach { ch -> LiveCard(ch) { onPlayLive(ch) } }
             }
             Text("Official live streams that these broadcasters publish on YouTube.", color = Cs.textMuted, fontSize = 12.sp)
         }
 
-        // Public-domain films (in-app)
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            CsSectionTitle("Classic films · play in CineSays")
-            if (state.freeBusy && state.freeFilms.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cs.accent)
-            if (!state.freeBusy && state.freeFilms.isEmpty()) Text("Couldn't reach the Internet Archive right now.", color = Cs.textMuted, fontSize = 13.sp)
-            FilmGrid(state.freeFilms, if (compact) 150.dp else 200.dp, onPlayFilm)
-            Text("Public-domain and openly licensed films from the Internet Archive.", color = Cs.textMuted, fontSize = 12.sp)
+        // One row per enabled film add-on; all play in CineSays.
+        if (state.freeBusy && state.freeCatalogs.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cs.accent)
+        if (!state.freeBusy && state.freeCatalogs.isEmpty()) Text("Couldn't load any film add-ons right now. Check your connection, or turn add-ons on in Settings › Add-ons.",
+            color = Cs.textMuted, fontSize = 13.sp)
+        state.freeCatalogs.forEach { c ->
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                CsSectionTitle("${c.addon.name} · play in CineSays")
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
+                    items(c.films, key = { f -> f.id }) { f -> FilmCard(f, if (compact) 150.dp else 200.dp) { onPlayFilm(f) } }
+                }
+            }
         }
+        if (state.freeCatalogs.isNotEmpty()) Text("Public-domain and openly licensed films from the Internet Archive. Choose which collections appear in Settings › Add-ons.",
+            color = Cs.textMuted, fontSize = 12.sp)
 
         // Free with ads (open in their apps)
         if (state.primeFreeTitles.isNotEmpty()) {
@@ -277,21 +295,6 @@ private fun LiveCard(ch: LiveChannel, onClick: () -> Unit) {
         }
         Text(ch.name, color = Cs.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(ch.about, color = Cs.textMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-@Composable
-private fun FilmGrid(films: List<FreeFilm>, cardWidth: Dp, onPlay: (FreeFilm) -> Unit) {
-    if (films.isEmpty()) return
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val gap = 14.dp
-        val columns = ((maxWidth + gap) / (cardWidth + gap)).toInt().coerceAtLeast(2)
-        val w = (maxWidth - gap * (columns - 1)) / columns
-        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
-            films.chunked(columns).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(gap)) { row.forEach { f -> key(f.id) { FilmCard(f, w) { onPlay(f) } } } }
-            }
-        }
     }
 }
 

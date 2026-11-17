@@ -99,7 +99,9 @@ data class ScreenState(
     /** In-app player (trailer, live channel or public-domain film), shown full screen. */
     val playing: Playable? = null, val playerBusy: Boolean = false,
     /** Free tab: public-domain classics (Internet Archive) and free-with-ads titles (TMDB). */
-    val freeFilms: List<FreeFilm> = emptyList(), val freeTitles: List<TitleItem> = emptyList(), val freeBusy: Boolean = false,
+    val freeCatalogs: List<AddonCatalog> = emptyList(), val freeTitles: List<TitleItem> = emptyList(), val freeBusy: Boolean = false,
+    /** Add-ons (Settings › Add-ons) with whether each is on, and the live channels from enabled ones. */
+    val addons: List<Pair<Addon, Boolean>> = emptyList(), val liveChannels: List<LiveChannel> = emptyList(),
     /** A free, legal copy of the movie open in Details, if the Internet Archive has one. */
     val freeMatch: FreeFilm? = null,
     /** Free tab: Amazon's free-with-ads titles (the free movies on IMDb). */
@@ -148,6 +150,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
                 watchlist = p[WATCHLIST].orEmpty().split(",").filter { s -> s.isNotBlank() }.toCollection(LinkedHashSet())) }
             refresh()
         }
+        viewModelScope.launch { publishAddons() } // built-ins right away; the registry loads with the Free tab
     }
 
     /** Call with the provider value as the UI chose it (before [resolveProvider]). */
@@ -175,15 +178,36 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     // ── Free watching ──
-    /** Loads the Free tab: public-domain classics and free-with-ads titles in your regions. */
+    /** Add-ons with their on/off state, for Settings › Add-ons. Also refreshes CineSays' registry. */
+    private fun publishAddons() {
+        _state.update { it.copy(addons = Addons.all.map { a -> a to Addons.isOn(app, a) },
+            liveChannels = Addons.enabled(app).filter { a -> a.engine == Addons.YOUTUBE_LIVE }.flatMap { a -> a.channels.orEmpty() }.distinctBy { c -> c.youtubeChannelId }) }
+    }
+    private var addonsLoaded = false
+    private suspend fun ensureAddons() {
+        if (addonsLoaded) return
+        Addons.refresh(app); addonsLoaded = true; publishAddons()
+    }
+    fun loadAddons() { viewModelScope.launch { ensureAddons() } }
+    fun toggleAddon(id: String) {
+        val a = Addons.all.firstOrNull { it.id == id } ?: return
+        Addons.setOn(app, id, !Addons.isOn(app, a))
+        publishAddons()
+        _state.update { it.copy(freeCatalogs = emptyList()) } // reload rows on the next visit to Free
+    }
+
+    /** Loads the Free tab: a row per enabled archive add-on, plus free-with-ads titles in your regions. */
     fun loadFree() {
-        if (_state.value.freeBusy || (_state.value.freeFilms.isNotEmpty() && _state.value.freeTitles.isNotEmpty())) return
+        if (_state.value.freeBusy || (_state.value.freeCatalogs.isNotEmpty() && _state.value.freeTitles.isNotEmpty())) return
         viewModelScope.launch {
             _state.update { it.copy(freeBusy = true) }
-            val films = async { runCatching { FreeFilms.classics() }.getOrDefault(emptyList()) }
+            ensureAddons()
+            val catalogs = Addons.enabled(app).filter { it.engine == Addons.ARCHIVE }
+                .map { a -> async { AddonCatalog(a, runCatching { FreeFilms.catalog(a) }.getOrDefault(emptyList())) } }
             val titles = async { runCatching { freeWithAds() }.getOrDefault(emptyList()) }
             val prime = async { runCatching { primeFree() }.getOrDefault(emptyList()) }
-            _state.update { it.copy(freeFilms = films.await(), freeTitles = titles.await(), primeFreeTitles = prime.await(), freeBusy = false) }
+            _state.update { it.copy(freeCatalogs = catalogs.awaitAll().filter { c -> c.films.isNotEmpty() },
+                freeTitles = titles.await(), primeFreeTitles = prime.await(), freeBusy = false) }
         }
     }
     private suspend fun freeWithAds(): List<TitleItem> = coroutineScope {
@@ -221,7 +245,8 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(freeMatch = null) }
         if (item.kind != "movie") return
         freeMatchJob = viewModelScope.launch {
-            val m = runCatching { FreeFilms.match(item.label, item.year.ifBlank { null }) }.getOrNull()
+            ensureAddons()
+            val m = runCatching { FreeFilms.match(item.label, item.year.ifBlank { null }, Addons.enabled(app)) }.getOrNull()
             if (_state.value.selected?.ref == item.ref) _state.update { it.copy(freeMatch = m) }
         }
     }

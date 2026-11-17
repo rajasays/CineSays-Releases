@@ -195,6 +195,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             "Tracker" -> { tracker.refresh(); tracker.loadReleases() }
             "Watchlist" -> vm.loadWatchlist()
             "Free" -> vm.loadFree()
+            "Settings" -> vm.loadAddons()
         }
     }
     LaunchedEffect(tab, browseKind, browseGenre, browseProvider, browseSort, state.regions, state.myServices) {
@@ -382,8 +383,26 @@ private fun SettingsScreen(
             listOf("US", "GB", "PK", "CA", "AU", "IN", "DE", "FR", "AE", "JP").forEach { r -> CsChip("$r · ${regionLabel(r)}", r in state.regions) { vm.toggleRegion(r) } }
         }
     }
+    CsPanel(Modifier.fillMaxWidth()) { AddonsSection(state.addons, vm::toggleAddon) }
     CsPanel(Modifier.fillMaxWidth()) { AppUpdatesSection(updateState, updater) }
     AboutCredit(updateState.currentVersion)
+}
+
+/** Settings › Add-ons: turn each legal catalogue on or off. */
+@Composable
+private fun AddonsSection(addons: List<Pair<Addon, Boolean>>, onToggle: (String) -> Unit) {
+    Text("Add-ons", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Text("Catalogues for the Free tab. CineSays only ships legal sources: public-domain and openly licensed films from the Internet Archive, and broadcasters' official live streams. New add-ons arrive with CineSays updates.",
+        color = Cs.textSoft, fontSize = 14.sp)
+    addons.forEach { (a, on) ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(a.name, color = Cs.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(a.description, color = Cs.textMuted, fontSize = 13.sp)
+            }
+            CsChip(if (on) "✓ On" else "Off", on, compact = true) { onToggle(a.id) }
+        }
+    }
 }
 
 /** "Imagined by" credit at the end of Settings. */

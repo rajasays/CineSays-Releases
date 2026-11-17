@@ -21,7 +21,8 @@ import retrofit2.http.Path
 // ───────────────────────────── Watch now: exact-title links ─────────────────────────────
 // TMDB says *which* service has a title but not the title's page on that service. Watchmode's free
 // Developer plan (non-commercial, attribution required) returns that page as `web_url`, e.g.
-// https://www.netflix.com/title/80057281. One lookup costs 2 of the plan's 2,500 monthly credits,
+// https://www.netflix.com/title/80057281. A lookup by TMDB id costs 2 of the plan's 2,500 monthly credits
+// (Watchmode's own ids cost 1, but mapping to them needs its 79 MB id file or another paid call),
 // so lookups happen only when a Watch button is pressed and are cached for 30 days (the most the free
 // plan allows). Without a WATCHMODE_API_KEY, or when nothing matches, buttons open the service's app.
 
@@ -85,9 +86,40 @@ object WatchNow {
         }
     }
 
+    /**
+     * Web hosts each service's own app opens. A source must link to one of these, which drops partner
+     * listings such as "HBO (Via Hulu)" or "MAX (Via Amazon Prime)" that point at another service's site.
+     */
+    private fun serviceHosts(providerId: Int): List<String>? = when (providerId) {
+        8 -> listOf("netflix.com")
+        9, 119, 2100, PRIME_FREE_ID -> listOf("amazon.com", "primevideo.com", "amazon.co.uk", "amazon.in")
+        350, 2 -> listOf("tv.apple.com")
+        1899, 384 -> listOf("hbomax.com", "max.com")
+        337 -> listOf("disneyplus.com")
+        531 -> listOf("paramountplus.com")
+        15 -> listOf("hulu.com")
+        232 -> listOf("zee5.com")
+        2336 -> listOf("hotstar.com")
+        237, 2792 -> listOf("sonyliv.com")
+        11 -> listOf("mubi.com")
+        73 -> listOf("tubitv.com")
+        300 -> listOf("pluto.tv")
+        538 -> listOf("plex.tv")
+        192, 235, 188 -> listOf("youtube.com")
+        3 -> listOf("play.google.com")
+        else -> null // unknown service: trust the name match
+    }
+
+    private fun onServiceHost(providerId: Int, url: String): Boolean {
+        val hosts = serviceHosts(providerId) ?: return true
+        val host = runCatching { Uri.parse(url).host }.getOrNull()?.lowercase() ?: return false
+        return hosts.any { host == it || host.endsWith(".$it") }
+    }
+
     /** The title's page on [provider], preferring the viewer's regions in order, then no-extra-cost offers. */
     suspend fun link(context: Context, kind: String, tmdbId: Int, provider: Provider, regions: List<String>): String? {
-        val matches = sources(context, kind, tmdbId).filter { !it.webUrl.isNullOrBlank() && it.webUrl.startsWith("http") && sameService(provider.id, provider.name, it.name) }
+        val matches = sources(context, kind, tmdbId).filter { !it.webUrl.isNullOrBlank() && it.webUrl.startsWith("http") &&
+            sameService(provider.id, provider.name, it.name) && onServiceHost(provider.id, it.webUrl) }
         val typeOrder = if (provider.id == PRIME_FREE_ID) listOf("free", "sub", "tve", "rent", "buy") else listOf("sub", "free", "tve", "rent", "buy")
         return matches.sortedWith(compareBy(
             { regions.indexOf(it.region).let { i -> if (i < 0) regions.size else i } },
@@ -96,8 +128,8 @@ object WatchNow {
     }
 
     /** Opens [url] in the service's own app when installed, else in whatever handles the link. */
-    fun open(context: Context, url: String, providerId: Int): Boolean {
-        val uri = Uri.parse(url)
+    fun open(context: Context, url: String, providerId: Int, kind: String = "movie"): Boolean {
+        val uri = Uri.parse(appLink(url, providerId, kind))
         for (pkg in providerPackages(providerId)) {
             // Netflix's TV app takes /watch/ID links; Watchmode gives /title/ID.
             val target = if (pkg == "com.netflix.ninja") Uri.parse(url.replace("/title/", "/watch/")) else uri
@@ -113,13 +145,23 @@ object WatchNow {
         } catch (_: ActivityNotFoundException) { false }
     }
 
+    /**
+     * HBO Max: Watchmode gives a one-ID player link (play.hbomax.com/video/watch/ID). The app can't resolve
+     * that and falls back to its home screen, so open the title's own page instead (/show/ID or /movie/ID).
+     */
+    private fun appLink(url: String, providerId: Int, kind: String): String {
+        if (providerId != 1899 && providerId != 384) return url
+        val m = Regex("""^https?://play\.(?:hbo)?max\.com/video/watch/([0-9a-f-]{36})/?$""").find(url) ?: return url
+        return "https://play.hbomax.com/${if (kind == "tv") "show" else "movie"}/${m.groupValues[1]}"
+    }
+
     /** Used by every "Open in …" button: exact title when known, otherwise the service's app. */
     fun watch(context: Context, provider: Provider, item: TitleItem, regions: Collection<String>) {
         val app = context.applicationContext
         if (!enabled) { openProviderApp(context, provider, item.label); return }
         scope.launch {
             val url = runCatching { link(app, item.kind, item.id, provider, regions.toList()) }.getOrNull()
-            if (url == null || !open(app, url, provider.id)) openProviderApp(context, provider, item.label)
+            if (url == null || !open(app, url, provider.id, item.kind)) openProviderApp(context, provider, item.label)
         }
     }
 }

@@ -1,3 +1,9 @@
+# CineSays 1.7.0
+- Add-ons: the Free tab is now built from add-ons — catalogues of legal sources you can turn on or off in Settings › Add-ons. New collections, all playing in CineSays: Silent era, Film noir, Sci-fi & horror classics, Cartoons & open movies (Sintel, Elephants Dream…), Classic TV and Vintage shorts (Prelinger Archives, off by default), alongside Classic feature films and Live news channels.
+- Only legal sources: CineSays plays public-domain and openly licensed films from the Internet Archive and broadcasters' official live streams — nothing else. New add-ons can arrive from CineSays' own add-on list without an app update, but they can only use those sources.
+- "Watch free in CineSays" on a movie's page now searches every film add-on you have on.
+- Watch now: HBO Max opens the title's page instead of bouncing to the app's home screen, and partner listings such as "HBO (via Hulu)" no longer get picked for the wrong app.
+
 # CineSays 1.6.0
 - Watch now: "Watch on Netflix" (and every Where to watch logo, Free on Prime Video and the Roulette pick) now opens the exact movie or show in that service's app, not just the app's home screen. Falls back to opening the app when a title link isn't known.
 - Title links come from Watchmode.com (free plan: add WATCHMODE_API_KEY to local.properties). Each title is looked up only when you press a button and remembered for 30 days.
