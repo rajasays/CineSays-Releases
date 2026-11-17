@@ -479,25 +479,27 @@ private fun AppUpdatesSection(state: UpdateState, updater: UpdateViewModel) {
     state.message?.let { Text(it, color = Cs.warn, fontSize = 14.sp) }
 }
 
-// TMDB's provider data does not include the provider-specific title ID. We can
-// launch an installed app, but cannot honestly promise a title-specific page.
+/** Android (TV first, then phone) packages for a TMDB provider. */
+fun providerPackages(providerId: Int): List<String> = when (providerId) {
+    8 -> listOf("com.netflix.ninja", "com.netflix.mediaclient")
+    9, 119, 2100, PRIME_FREE_ID -> listOf("com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient")
+    350, 2 -> listOf("com.apple.atve.androidtv.appletv")
+    1899, 384 -> listOf("com.wbd.stream", "com.hbo.hbonow")
+    192, 3, 235, 188 -> listOf("com.google.android.youtube.tv", "com.google.android.youtube")
+    337 -> listOf("com.disney.disneyplus")
+    73 -> listOf("com.tubitv")
+    300 -> listOf("tv.pluto.android")
+    538 -> listOf("com.plexapp.android")
+    232 -> listOf("com.graymatrix.did")
+    2336 -> listOf("in.startv.hotstar")
+    237, 2792 -> listOf("com.sonyliv")
+    11 -> listOf("com.mubi")
+    else -> emptyList()
+}
+
+// Fallback when no title-specific link is known (see WatchNow): launch the installed app.
 fun openProviderApp(context: Context, provider: Provider, title: String) {
-    val names = when (provider.id) {
-        8 -> listOf("com.netflix.ninja", "com.netflix.mediaclient")
-        9, 119, PRIME_FREE_ID -> listOf("com.amazon.amazonvideo.livingroom", "com.amazon.avod.thirdpartyclient")
-        350, 2 -> listOf("com.apple.atve.androidtv.appletv")
-        1899, 384 -> listOf("com.wbd.stream", "com.hbo.hbonow")
-        192, 3, 235, 188 -> listOf("com.google.android.youtube.tv", "com.google.android.youtube")
-        337 -> listOf("com.disney.disneyplus")
-        73 -> listOf("com.tubitv")
-        300 -> listOf("tv.pluto.android")
-        538 -> listOf("com.plexapp.android")
-        232 -> listOf("com.graymatrix.did")
-        2336 -> listOf("in.startv.hotstar")
-        237, 2792 -> listOf("com.sonyliv")
-        11 -> listOf("com.mubi")
-        else -> emptyList()
-    }
+    val names = providerPackages(provider.id)
     for (pkg in names) {
         try {
             val launch = context.packageManager.getLeanbackLaunchIntentForPackage(pkg) ?: context.packageManager.getLaunchIntentForPackage(pkg)

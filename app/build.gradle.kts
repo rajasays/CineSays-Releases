@@ -14,6 +14,8 @@ val firebaseAppId = (local.getProperty("FIREBASE_APP_ID") ?: "")
 val firebaseProjectId = (local.getProperty("FIREBASE_PROJECT_ID") ?: "")
 val updateRepo = (local.getProperty("UPDATE_REPO") ?: System.getenv("UPDATE_REPO") ?: "").trim()
 val omdbKey = (local.getProperty("OMDB_API_KEY") ?: System.getenv("OMDB_API_KEY") ?: "")
+// Optional: free Watchmode key (api.watchmode.com) for exact-title "Watch on" links.
+val watchmodeKey = (local.getProperty("WATCHMODE_API_KEY") ?: System.getenv("WATCHMODE_API_KEY") ?: "").trim()
 android {
     namespace = "com.cineglass.tv"
     compileSdk = 35
@@ -25,6 +27,7 @@ android {
         versionName = "1.5.0"
         buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "OMDB_API_KEY", "\"${omdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        buildConfigField("String", "WATCHMODE_API_KEY", "\"${watchmodeKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseApiKey}\"")
         buildConfigField("String", "FIREBASE_APP_ID", "\"${firebaseAppId}\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${firebaseProjectId}\"")

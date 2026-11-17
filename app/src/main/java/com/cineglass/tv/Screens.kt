@@ -177,9 +177,13 @@ fun DetailsScreen(
         CsPanel(m) {
             Text("Where to watch", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             if (state.detailBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            else WhereToWatchGrid(regions, state.providersByRegion, myProviders) { p -> openProviderApp(context, p, item.label) }
+            else WhereToWatchGrid(regions, state.providersByRegion, myProviders) { p -> WatchNow.watch(context, p, item, regions) }
             Text(if (myProviders.isEmpty()) "Tip: set My Services in Settings to see your own services first."
+                else if (WatchNow.enabled) "✓ = included with your services. Buttons open the title in its app."
                 else "✓ = included with your services. Buttons open the installed app.", color = Cs.textMuted, fontSize = 12.sp)
+            // Required by Watchmode's free plan wherever its data is used.
+            if (WatchNow.enabled) Text("Title links by Watchmode.com", color = Cs.textMuted, fontSize = 11.sp,
+                modifier = Modifier.clickable { openUrl(context, "https://www.watchmode.com/") })
         }
     }
     val castRow: @Composable (Modifier) -> Unit = { m ->
@@ -291,12 +295,12 @@ private fun DetailActions(
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         // Skipped when the main button already opens Prime Video (you subscribe): same app, nothing to add.
         val primeFree = state.primeFreeRegions.isNotEmpty() && best?.first?.id !in setOf(9, 119, 2100)
-        if (best != null && !(primeFree && best.first.id == PRIME_FREE_ID)) CsButton("Open in ${best.first.name}", primary = true) { openProviderApp(context, best.first, item.label) }
+        if (best != null && !(primeFree && best.first.id == PRIME_FREE_ID)) CsButton("▶ Watch on ${best.first.name}", primary = true) { WatchNow.watch(context, best.first, item, listOf(best.second) + state.regions) }
         // Free with ads on Prime Video (the free movies IMDb lists). Marked with its regions when not free in all of yours.
         if (primeFree) {
             val where = if (state.primeFreeRegions.size < state.regions.size) " (${state.primeFreeRegions.joinToString(", ")})" else ""
             CsButton("▶ Free on Prime Video$where", primary = best == null || best.first.id == PRIME_FREE_ID) {
-                openProviderApp(context, Provider(PRIME_FREE_ID, "Prime Video", null), item.label)
+                WatchNow.watch(context, Provider(PRIME_FREE_ID, "Prime Video", null), item, state.primeFreeRegions)
             }
         }
         // Free, legal copy (public domain / openly licensed): plays right here.
@@ -494,7 +498,7 @@ private fun RouletteReveal(
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     val offer = state.rouletteOffer
-                    if (offer != null) CsButton("▶ Open in ${offer.first.name}", primary = true, modifier = Modifier.focusRequester(primaryFocus)) { openProviderApp(context, offer.first, pick.label) }
+                    if (offer != null) CsButton("▶ Watch on ${offer.first.name}", primary = true, modifier = Modifier.focusRequester(primaryFocus)) { WatchNow.watch(context, offer.first, pick, listOf(offer.second) + state.regions) }
                     CsButton("Details", primary = offer == null, modifier = if (offer == null) Modifier.focusRequester(primaryFocus) else Modifier) { onDetails(pick) }
                     CsButton(if (pick.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onWatchlist(pick) }
                 }

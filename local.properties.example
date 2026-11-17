@@ -2,6 +2,9 @@ sdk.dir=YOUR_ANDROID_SDK_LOCATION
 TMDB_API_KEY=YOUR_TMDB_API_KEY
 OMDB_API_KEY=YOUR_OMDB_API_KEY
 
+# Optional: free Watchmode key (api.watchmode.com/requestApiKey) - "Watch on" buttons open the exact title
+WATCHMODE_API_KEY=
+
 # Optional: Firebase (Friends)
 FIREBASE_API_KEY=
 FIREBASE_APP_ID=
