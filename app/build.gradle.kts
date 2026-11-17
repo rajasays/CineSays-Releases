@@ -23,8 +23,8 @@ android {
         applicationId = "com.cineglass.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.5.0"
+        versionCode = 17
+        versionName = "1.6.0"
         buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "OMDB_API_KEY", "\"${omdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "WATCHMODE_API_KEY", "\"${watchmodeKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")

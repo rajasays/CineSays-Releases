@@ -1,3 +1,7 @@
+# CineSays 1.6.0
+- Watch now: "Watch on Netflix" (and every Where to watch logo, Free on Prime Video and the Roulette pick) now opens the exact movie or show in that service's app, not just the app's home screen. Falls back to opening the app when a title link isn't known.
+- Title links come from Watchmode.com (free plan: add WATCHMODE_API_KEY to local.properties). Each title is looked up only when you press a button and remembered for 30 days.
+
 # CineSays 1.5.0
 - Free tab: new "Free on Prime Video" row — the free movies and shows IMDb links to (Amazon's free-with-ads catalogue, formerly Freevee). They open in the Prime Video app; an Amazon sign-in is needed, not a Prime subscription. Available in the US, UK and India.
 - Details: "Free on Prime Video" button when a title is free there, marked with its region (e.g. "(US)") when it isn't free in all of yours. Hidden if you already subscribe to Prime Video.
