@@ -136,6 +136,17 @@ fun NativePlayerScreen(
         lifecycle.addObserver(obs); onDispose { lifecycle.removeObserver(obs) }
     }
     LaunchedEffect(seekHint) { if (seekHint != null) { delay(900); seekHint = null } }
+    // Still loading after 15 s with nothing played: say the source is slow instead of spinning silently.
+    var slowStart by remember(playback.url) { mutableStateOf(false) }
+    LaunchedEffect(player) {
+        var waited = 0
+        while (true) {
+            delay(1000)
+            val stuck = player.playbackState == Player.STATE_BUFFERING && player.currentPosition < 1000
+            waited = if (stuck) waited + 1 else 0
+            slowStart = waited >= 15
+        }
+    }
 
     // Back: close a picker, then hide the controls, then leave the player.
     BackHandler {
@@ -215,6 +226,14 @@ fun NativePlayerScreen(
                 .focusable())
             seekHint?.let { Text(it, color = Cs.text, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .6f), RoundedCornerShape(12.dp)).padding(horizontal = 18.dp, vertical = 10.dp)) }
+
+            if (slowStart && error == null) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp).widthIn(max = 640.dp)
+                .background(Cs.panel.copy(alpha = .92f), RoundedCornerShape(16.dp)).border(1.dp, Cs.line, RoundedCornerShape(16.dp)).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Still loading…", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("${StreamUrls.host(playback.url) ?: "The source"} is responding slowly on your connection. You can keep waiting" +
+                    (if (onFindSources != null) ", or pick another source (Up, then Close, or Back)." else ", or press Back to leave."), color = Cs.textSoft, fontSize = 14.sp)
+            }
 
             error?.let { msg ->
                 PlayerOverlay(Modifier.align(Alignment.Center)) {
