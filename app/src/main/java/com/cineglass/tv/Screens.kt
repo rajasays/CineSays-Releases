@@ -58,7 +58,8 @@ fun HomeScreen(
     state: ScreenState, upNext: List<UpNextEntry>, firstFocus: FocusRequester,
     openDetails: (TitleItem) -> Unit, toggleWatchlist: (TitleItem) -> Unit,
     openTracker: () -> Unit, openServices: () -> Unit, markWatched: (UpNextEntry) -> Unit,
-    openShow: (UpNextEntry) -> Unit = { openTracker() }
+    openShow: (UpNextEntry) -> Unit = { openTracker() },
+    continueWatching: List<PlaybackRecord> = emptyList(), onResume: (PlaybackRecord) -> Unit = {}, onResumeDetails: (PlaybackRecord) -> Unit = {}
 ) {
     val compact = LocalCompact.current
     val heroes = remember(state.sections) {
@@ -98,6 +99,9 @@ fun HomeScreen(
             Text("Tell CineSays which services you pay for to see what's new on them.", color = Cs.textSoft, fontSize = 15.sp)
             CsButton("Set up My Services") { openServices() }
         }
+
+        // Titles started in CineSays' own player, resumable where they stopped.
+        ContinueWatchingRow(continueWatching, onResume, onResumeDetails)
 
         if (upNext.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -160,7 +164,8 @@ fun DetailsScreen(
     item: TitleItem, state: ScreenState, myProviders: Set<Int>, inTracker: Boolean, backFocus: FocusRequester, context: Context,
     onBack: () -> Unit, onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onOpenSimilar: (TitleItem) -> Unit,
     liked: Boolean = false, onLike: () -> Unit = {}, movieWatched: Boolean = false, onMovieWatched: (Boolean) -> Unit = {},
-    onPerson: (CastMember) -> Unit = {}, onPlayTrailer: (String) -> Unit = {}, onWatchFree: (FreeFilm) -> Unit = {}
+    onPerson: (CastMember) -> Unit = {}, onPlayTrailer: (String) -> Unit = {}, onWatchFree: (FreeFilm) -> Unit = {},
+    onWatchNow: () -> Unit = {}
 ) {
     val compact = LocalCompact.current
     val regions = state.regions.sorted()
@@ -221,10 +226,10 @@ fun DetailsScreen(
                         RatingTile("Rotten Tomatoes", state.rottenTomatoes ?: "—")
                     }
                     Text(item.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 780.dp))
-                    if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree)
+                    if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree, onWatchNow)
                 }
             }
-            if (compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree)
+            if (compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree, onWatchNow)
             if (compact) { wherePanel(Modifier.fillMaxWidth()); castRow(Modifier.fillMaxWidth()) }
             else Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) { wherePanel(Modifier.weight(1.25f)); castRow(Modifier.weight(1f)) }
             if (state.similar.isNotEmpty()) CsPosterRow("More like this", state.similar, onClick = onOpenSimilar)
@@ -290,23 +295,25 @@ fun PersonScreen(person: Person, busy: Boolean, firstFocus: FocusRequester, onBa
 private fun DetailActions(
     item: TitleItem, state: ScreenState, best: Pair<Provider, String>?, inTracker: Boolean, liked: Boolean, movieWatched: Boolean, context: Context,
     onToggleWatchlist: () -> Unit, onTrack: () -> Unit, onRecommend: () -> Unit, onLike: () -> Unit, onMovieWatched: (Boolean) -> Unit,
-    onPlayTrailer: (String) -> Unit, onWatchFree: (FreeFilm) -> Unit
+    onPlayTrailer: (String) -> Unit, onWatchFree: (FreeFilm) -> Unit, onWatchNow: () -> Unit
 ) {
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Watch Now: every way to watch (in CineSays, a streaming service, or Stremio); series pick an episode there.
+        CsButton("▶ Watch Now", primary = true) { onWatchNow() }
         // Skipped when the main button already opens Prime Video (you subscribe): same app, nothing to add.
         val primeFree = state.primeFreeRegions.isNotEmpty() && best?.first?.id !in setOf(9, 119, 2100)
-        if (best != null && !(primeFree && best.first.id == PRIME_FREE_ID)) CsButton("▶ Watch on ${best.first.name}", primary = true) { WatchNow.watch(context, best.first, item, listOf(best.second) + state.regions) }
+        if (best != null && !(primeFree && best.first.id == PRIME_FREE_ID)) CsButton("Watch on ${best.first.name}") { WatchNow.watch(context, best.first, item, listOf(best.second) + state.regions) }
         // Free with ads on Prime Video (the free movies IMDb lists). Marked with its regions when not free in all of yours.
         if (primeFree) {
             val where = if (state.primeFreeRegions.size < state.regions.size) " (${state.primeFreeRegions.joinToString(", ")})" else ""
-            CsButton("▶ Free on Prime Video$where", primary = best == null || best.first.id == PRIME_FREE_ID) {
+            CsButton("Free on Prime Video$where") {
                 WatchNow.watch(context, Provider(PRIME_FREE_ID, "Prime Video", null), item, state.primeFreeRegions)
             }
         }
         // Free, legal copy (public domain / openly licensed): plays right here.
-        state.freeMatch?.let { f -> CsButton("▶ Watch free in CineSays", primary = true) { onWatchFree(f) } }
+        state.freeMatch?.let { f -> CsButton("Watch free in CineSays") { onWatchFree(f) } }
         // Trailer plays in-app (YouTube's embedded player).
-        state.trailer?.let { key -> CsButton("▶ Trailer", primary = best == null && state.freeMatch == null) { onPlayTrailer(key) } }
+        state.trailer?.let { key -> CsButton("▶ Trailer") { onPlayTrailer(key) } }
         CsButton(if (liked) "♥ Liked" else "♡ Like") { onLike() }
         CsButton(if (item.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { onToggleWatchlist() }
         if (item.kind == "movie" && !state.detailBusy) CsButton(if (movieWatched) "✓ Watched" else "Mark watched") { onMovieWatched(!movieWatched) }

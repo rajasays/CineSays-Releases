@@ -29,7 +29,11 @@ data class Addon(
     val requireLicence: Boolean = false,
     /** youtube_live: the channels. */
     val channels: List<LiveChannel>? = null,
-    val defaultOn: Boolean = true
+    val defaultOn: Boolean = true,
+    /** stremio: the add-on's https manifest URL. */
+    val manifestUrl: String? = null,
+    /** stremio: the only hosts its streams (and subtitles) may come from. */
+    val allowedHosts: List<String>? = null
 )
 
 /** One add-on's films, as shown in a Free tab row. */
@@ -38,7 +42,11 @@ data class AddonCatalog(val addon: Addon, val films: List<FreeFilm>)
 object Addons {
     const val ARCHIVE = "archive"
     const val YOUTUBE_LIVE = "youtube_live"
-    private val ENGINES = setOf(ARCHIVE, YOUTUBE_LIVE)
+    /** A Stremio-protocol add-on from CineSays' list, restricted to the stream hosts the list names. */
+    const val STREMIO = "stremio"
+    private val ENGINES = setOf(ARCHIVE, YOUTUBE_LIVE, STREMIO)
+    // A real domain: dot-separated labels ending in an alphabetic top-level label (so no IP addresses).
+    private val HOST = Regex("""^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]([a-z0-9-]*[a-z0-9])?$""")
 
     /** CineSays' own registry: lets new legal catalogues appear without an app update. */
     private const val REGISTRY_URL = "https://raw.githubusercontent.com/rajasays/CineSays-Releases/main/addons.json"
@@ -91,6 +99,12 @@ object Addons {
             YOUTUBE_LIVE -> {
                 val chans = a.channels.orEmpty().filter { CHANNEL_ID.matches(it.youtubeChannelId) && it.name.isNotBlank() }
                 if (chans.isEmpty()) null else a.copy(channels = chans, query = null)
+            }
+            STREMIO -> {
+                val m = a.manifestUrl?.trim()?.takeIf { it.endsWith("/manifest.json") && StreamUrls.isHttps(it) } ?: return null
+                // Bare domains only (no wildcards, IPs or paths); without any, nothing from it could play.
+                val hosts = a.allowedHosts.orEmpty().map { it.trim().lowercase() }.filter { HOST.matches(it) }
+                if (hosts.isEmpty()) null else a.copy(manifestUrl = m, allowedHosts = hosts, query = null, channels = null)
             }
             else -> null
         }

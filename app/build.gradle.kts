@@ -23,8 +23,8 @@ android {
         applicationId = "com.cineglass.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.7.0"
+        versionCode = 19
+        versionName = "1.8.0"
         buildConfigField("String", "TMDB_API_KEY", "\"${tmdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "OMDB_API_KEY", "\"${omdbKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "WATCHMODE_API_KEY", "\"${watchmodeKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
@@ -54,6 +54,8 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    // JVM unit tests cover pure logic (parsing, routing, progress); Android stubs return defaults instead of throwing.
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
@@ -72,6 +74,10 @@ dependencies {
     // In-app player for public-domain films (Internet Archive): play/pause/seek with a TV remote or touch.
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // Adaptive streams for the hybrid player (same Media3 version as the core).
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
+    testImplementation("junit:junit:4.13.2")
     implementation("org.apache.commons:commons-csv:1.11.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")

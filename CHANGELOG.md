@@ -1,3 +1,11 @@
+# CineSays 1.8.0 — Hybrid player
+- Watch Now: one button on every movie and series page shows every way to watch: play in CineSays (legal sources), open your streaming service, or open in Stremio (when installed). Series pick a season and episode first, with watched marks, progress and "Mark watched".
+- New CineSays player: HLS, DASH and MP4; Quality, Audio, Subtitles and Speed pickers that list what the stream really offers; remote control (Left/Right seek 10 s, Play/Pause, Back); clear error messages with Retry.
+- Resume: CineSays remembers where you stopped and asks "Resume from 12:07" or "Start from beginning". Home gets a Continue watching row.
+- Tracker: titles played in CineSays are marked watched once you pass 90% (adjustable); opening another app never marks anything.
+- Settings › Playback & Streaming: preferred quality, audio and subtitle language, subtitle size, resume behaviour, what Watch Now opens, buffering, and playback diagnostics with HLS/DASH test streams.
+- Stremio-compatible add-on support, limited to CineSays' curated list and approved stream hosts. CineSays doesn't play torrents.
+
 # CineSays 1.7.0
 - Add-ons: the Free tab is now built from add-ons — catalogues of legal sources you can turn on or off in Settings › Add-ons. New collections, all playing in CineSays: Silent era, Film noir, Sci-fi & horror classics, Cartoons & open movies (Sintel, Elephants Dream…), Classic TV and Vintage shorts (Prelinger Archives, off by default), alongside Classic feature films and Live news channels.
 - Only legal sources: CineSays plays public-domain and openly licensed films from the Internet Archive and broadcasters' official live streams — nothing else. New add-ons can arrive from CineSays' own add-on list without an app update, but they can only use those sources.

@@ -24,6 +24,11 @@
         <package android:name="in.startv.hotstar" />
         <package android:name="com.sonyliv" />
         <package android:name="com.mubi" />
+        <!-- Detects whether Stremio is installed so "Open in Stremio" is only offered when it can work. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="stremio" />
+        </intent>
     </queries>
     <application android:label="CineSays" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="false" android:icon="@drawable/cinesays_launcher" android:roundIcon="@drawable/cinesays_launcher" android:banner="@drawable/cinesays_tv_banner" android:allowBackup="false">
         <!-- No forced orientation: TVs are landscape anyway, phones may rotate. -->

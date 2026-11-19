@@ -101,6 +101,12 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     val updateState by updater.state.collectAsState()
     val ctx = LocalContext.current
     val social = remember { SocialRepository(ctx.applicationContext as Application) }
+    // Hybrid player: Watch Now, native playback, resume and progress.
+    val streaming: StreamingViewModel = viewModel()
+    val streamState by streaming.state.collectAsState()
+    // In-app playback that crossed the completion threshold goes to the Tracker, once per movie / episode.
+    LaunchedEffect(Unit) { streaming.completed.collect { r -> tracker.recordPlaybackCompleted(r) } }
+    LaunchedEffect(streamState.message) { streamState.message?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show(); streaming.clearMessage() } }
 
     var tab by remember { mutableStateOf(startTab) }
     var query by remember { mutableStateOf("") }
@@ -117,6 +123,22 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     val heroFocus = remember { FocusRequester() }
     val onboardingFocus = remember { FocusRequester() }
     var focusHomeOnReturn by remember { mutableStateOf(false) }
+
+    /** Opens Watch Now for [item]; offers and the IMDb id come from Details when it's showing that title. */
+    fun openWatchNow(item: TitleItem, preselect: MediaRef? = null) {
+        scope.launch {
+            val watched = if (item.kind == "tv") tracker.watchedFor(item.id) else emptySet()
+            val shown = state.selected?.let { it.id == item.id && it.kind == item.kind } == true
+            streaming.openWatchNow(item, if (shown) state.imdbId else preselect?.imdbId, if (shown) state.providersByRegion else emptyMap(),
+                state.regions, vm.myProviderIds(), watched, preselect)
+        }
+    }
+    /** Watch Now for a saved movie / episode (Continue Watching, next episode, "Other sources"). */
+    fun openWatchNowFor(ref: MediaRef) {
+        val item = if (ref.type == MediaType.MOVIE) TitleItem(id = ref.tmdbId, title = ref.title, mediaType = "movie", poster = ref.poster)
+            else TitleItem(id = ref.tmdbId, name = ref.title, mediaType = "tv", poster = ref.poster)
+        openWatchNow(item, if (ref.type == MediaType.EPISODE) ref else null)
+    }
 
     // Discover filters
     var browseKind by remember { mutableStateOf("both") }
@@ -263,6 +285,9 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             state.error?.let { Text(it, color = Color(0xFFFFB0A0)) }
             when (tab) {
                 "Home" -> HomeScreen(state, upNext, heroFocus, openDetails = vm::select, toggleWatchlist = vm::toggle,
+                    continueWatching = streamState.continueWatching,
+                    onResume = { r -> streaming.resume(r) { rec -> rec.ref()?.let(::openWatchNowFor) } },
+                    onResumeDetails = { r -> r.ref()?.let { ref -> vm.selectById(if (ref.type == MediaType.MOVIE) "movie" else "tv", ref.tmdbId) } },
                     openTracker = { tab = "Tracker" }, openServices = { tab = "Settings" },
                     markWatched = { e -> tracker.mark(e.show, e.episode.season, e.episode.number, true) },
                     // Up next card → that series in Tracker (season and episodes), not "mark watched".
@@ -272,7 +297,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     onKind = { browseKind = it }, onGenre = { browseGenre = it }, onProvider = { browseProvider = it }, onSort = { browseSort = it },
                     onSelect = vm::select)
                 // Legal free watching: live channels and public-domain films play in-app; free-with-ads titles open their apps.
-                "Free" -> FreeScreen(state, ctx, onPlayFilm = vm::playFilm,
+                "Free" -> FreeScreen(state, ctx, onPlayFilm = { f -> streaming.playFreeFilm(f) },
                     onPlayLive = { ch -> vm.play(Playable.Live("${ch.name} · Live", ch.youtubeChannelId)) }, onOpenTitle = vm::select)
                 "Tracker" -> CineTrackerPage(tracker) { kind, id -> vm.selectById(kind, id) }
                 "Watchlist" -> {
@@ -299,7 +324,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     if (!state.searching && query.isNotBlank() && state.results.isEmpty()) Text("No movies or series match \"$query\".", color = Cs.textSoft)
                     CsPosterGrid(state.results, onClick = vm::select)
                 }
-                "Settings" -> SettingsScreen(state, updateState, updater, vm, socialState,
+                "Settings" -> SettingsScreen(state, updateState, updater, vm, socialState, streamState, streaming::updatePrefs, streaming::playTest,
                     onCreateAccount = { email, pw -> scope.launch { social.createAccount(email, pw, backupJson()) } },
                     onSignIn = { email, pw -> scope.launch { social.signIn(email, pw)?.let { restoreJson(it) } } },
                     onBackupNow = { scope.launch { if (social.uploadBackup(backupJson())) Toast.makeText(ctx, "Backed up", Toast.LENGTH_SHORT).show() } },
@@ -334,7 +359,8 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                     movieWatched = item.id in trackerUi.watchedMovieIds, onMovieWatched = { tracker.setMovieWatched(item, it) },
                     onPerson = vm::openPerson,
                     onPlayTrailer = { key -> vm.play(Playable.Trailer("Trailer · ${item.label}", key)) },
-                    onWatchFree = { film -> vm.playFilm(film) })
+                    onWatchFree = { film -> streaming.playFreeFilm(film, MediaRef(MediaType.MOVIE, item.id, item.label, state.imdbId, item.year.ifBlank { null }, poster = item.poster), item) },
+                    onWatchNow = { openWatchNow(item) })
             }
         }
     }
@@ -354,6 +380,31 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             PlayerScreen(item, onClose = vm::closePlayer)
         }
     }
+    // Watch Now over Details; the native player over Watch Now (Back returns to it, focus intact).
+    streamState.watchNow?.let { w ->
+        WatchNowDialog(w, streamState.stremioInstalled, onClose = streaming::closeWatchNow, onSeason = { streaming.selectSeason(it) },
+            onEpisode = streaming::selectEpisode, onAction = { a -> streaming.act(a, ctx) }, onRetry = streaming::retry,
+            onMarkEpisode = { ref, watched ->
+                val s = ref.season; val e = ref.episode
+                if (s != null && e != null) { tracker.markEpisodeByTmdb(ref.tmdbId, ref.title, ref.poster, s, e, watched); streaming.setEpisodeWatched(ref, watched) }
+            })
+    }
+    streamState.resume?.let { p -> ResumeDialog(p, onResume = { streaming.answerResume(true) }, onRestart = { streaming.answerResume(false) }, onDismiss = streaming::dismissResume) }
+    streamState.playing?.let { p ->
+        Dialog(onDismissRequest = streaming::closePlayer, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            NativePlayerScreen(p, streamState.prefs, onProgress = { pos, dur -> streaming.saveProgress(p, pos, dur) }, onClose = streaming::closePlayer,
+                onNext = p.next?.let { { streaming.playNext { ref -> openWatchNowFor(ref) } } },
+                onFindSources = p.record.ref()?.let { ref -> { streaming.closePlayer(); if (streamState.watchNow == null) openWatchNowFor(ref) } },
+                onSubtitlePref = { lang -> streaming.updatePrefs { if (lang == null) it.copy(subtitleMode = "off") else it.copy(subtitleMode = "on", subtitleLanguage = lang) } })
+        }
+    }
+    if (streamState.preparing) Dialog(onDismissRequest = {}) {
+        Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
+            Text("Getting the video ready…", color = Cs.text)
+        }
+    }
     if (state.playerBusy) Dialog(onDismissRequest = vm::closePlayer) {
         Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -366,6 +417,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
 @Composable
 private fun SettingsScreen(
     state: ScreenState, updateState: UpdateState, updater: UpdateViewModel, vm: CatalogViewModel, social: SocialState,
+    streamState: StreamingState, onPlaybackPrefs: ((PlaybackPrefs) -> PlaybackPrefs) -> Unit, onPlaybackTest: (StreamKind) -> Unit,
     onCreateAccount: (String, String) -> Unit, onSignIn: (String, String) -> Unit, onBackupNow: () -> Unit, onRestoreNow: () -> Unit,
     onResetPassword: (String) -> Unit
 ) {
@@ -383,6 +435,8 @@ private fun SettingsScreen(
             listOf("US", "GB", "PK", "CA", "AU", "IN", "DE", "FR", "AE", "JP").forEach { r -> CsChip("$r · ${regionLabel(r)}", r in state.regions) { vm.toggleRegion(r) } }
         }
     }
+    CsPanel(Modifier.fillMaxWidth()) { PlaybackSettingsSection(streamState.prefs, streamState.stremioInstalled,
+        state.addons.filter { it.first.engine == Addons.STREMIO && it.second }, onPlaybackPrefs, onPlaybackTest) }
     CsPanel(Modifier.fillMaxWidth()) { AddonsSection(state.addons, vm::toggleAddon) }
     CsPanel(Modifier.fillMaxWidth()) { AppUpdatesSection(updateState, updater) }
     AboutCredit(updateState.currentVersion)

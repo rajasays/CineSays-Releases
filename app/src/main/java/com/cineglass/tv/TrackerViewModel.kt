@@ -208,6 +208,50 @@ class TrackerViewModel(app: Application): AndroidViewModel(app) {
         }
     }
 
+    /**
+     * In-app playback crossed the completion threshold: record it once. Never called for titles opened in
+     * another app. A series not yet in the Tracker is followed first so the episode has somewhere to go.
+     */
+    fun recordPlaybackCompleted(r: PlaybackRecord) {
+        if (r.tmdbId <= 0) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val today = LocalDate.now().toString()
+            val msg = when (r.type) {
+                "movie" -> if (r.tmdbId in store.watchedMovieIds()) null
+                    else { store.addMovie(r.title, today, r.tmdbId, r.poster); "Marked ${r.title} as watched" }
+                "episode" -> {
+                    val s = r.season ?: return@launch; val e = r.episode ?: return@launch
+                    val title = store.showTitleByTmdb(r.tmdbId) ?: run {
+                        store.followTmdb(TitleItem(id = r.tmdbId, name = r.title, mediaType = "tv", poster = r.poster))
+                        store.showTitleByTmdb(r.tmdbId) ?: r.title
+                    }
+                    if (store.isWatched(title, s, e)) null else { store.mark(title, s, e, true, today); "Marked ${r.title} S$s E$e as watched" }
+                }
+                else -> null
+            } ?: return@launch
+            withContext(Dispatchers.Main) {
+                refresh(); loadReleases(force = true)
+                _ui.value = _ui.value.copy(message = msg, dataVersion = _ui.value.dataVersion + 1)
+            }
+        }
+    }
+
+    /** Watched episodes for a series, for Watch Now's episode list. */
+    suspend fun watchedFor(tmdbId: Int): Set<Pair<Int, Int>> = withContext(Dispatchers.IO) {
+        store.showTitleByTmdb(tmdbId)?.let { store.allWatchedFor(it) }.orEmpty()
+    }
+
+    /** Watch Now › Mark watched on one episode (follows the series first if needed). */
+    fun markEpisodeByTmdb(tmdbId: Int, showTitle: String, poster: String?, season: Int, episode: Int, watched: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val title = store.showTitleByTmdb(tmdbId) ?: run {
+                store.followTmdb(TitleItem(id = tmdbId, name = showTitle, mediaType = "tv", poster = poster))
+                store.showTitleByTmdb(tmdbId) ?: showTitle
+            }
+            withContext(Dispatchers.Main) { mark(title, season, episode, watched) }
+        }
+    }
+
     // ── Build your tracker (no import needed) ──
     private var pickerPage = 0
     private val pickerSkipped get() = store.preference("picker_skipped").orEmpty().split(",").mapNotNull { it.toIntOrNull() }.toSet()
