@@ -496,7 +496,7 @@ private fun AboutCredit(version: String) {
         androidx.compose.foundation.Image(
             painter = androidx.compose.ui.res.painterResource(R.drawable.khanpur_logo),
             contentDescription = "Khanpur Boys logo", modifier = Modifier.size(96.dp))
-        Text("Imagined by Khanpur Boys", color = Cs.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text("Imagined by Khanpurians", color = Cs.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Text("CineSays $version", color = Cs.textMuted, fontSize = 13.sp)
     }
 }
