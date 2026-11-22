@@ -85,26 +85,26 @@ fun HomeScreen(
             .onFocusChanged { heroFocused = it.hasFocus }) {
             if (heroes.isEmpty()) {
                 Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(if (compact) 20.dp else 40.dp), color = Cs.text, fontSize = 26.sp)
-            } else androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.fillMaxSize(), key = { heroes[it].ref }) { page ->
-                val hero = heroes[page]
-                Box(Modifier.fillMaxSize()) {
-                    AsyncImage(hero.hero(), hero.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
-                        else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
-                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
-                    Column(if (compact) Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 34.dp).fillMaxWidth()
-                        else Modifier.align(Alignment.CenterStart).padding(start = 40.dp).fillMaxWidth(.5f),
-                        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
-                        Text("TRENDING #${page + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
-                        Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
-                        if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // Only the page on screen owns the first-focus target, so the remote lands on what you see.
-                            CsButton("Details", primary = true, modifier = if (page == pager.currentPage) Modifier.focusRequester(firstFocus) else Modifier) { openDetails(hero) }
-                            CsButton(if (hero.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { toggleWatchlist(hero) }
-                        }
+            } else {
+                // Phones: each page carries its own text and buttons and is swiped by touch.
+                // TV: only the pictures slide; one fixed text-and-buttons layer follows the current page. Buttons
+                // inside the pager let D-pad focus wander into the neighbouring page, which dragged the pager along.
+                androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.fillMaxSize(), key = { heroes[it].ref }, userScrollEnabled = compact) { page ->
+                    val hero = heroes[page]
+                    Box(Modifier.fillMaxSize()) {
+                        AsyncImage(hero.hero(), hero.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
+                            else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
+                        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
+                        if (compact) HeroText(hero, page, true, hero.ref in state.watchlist, Modifier.align(Alignment.BottomStart),
+                            if (page == pager.currentPage) Modifier.focusRequester(firstFocus) else Modifier, { openDetails(hero) }, { toggleWatchlist(hero) })
                     }
+                }
+                if (!compact) {
+                    val page = pager.currentPage.coerceIn(0, heroes.lastIndex)
+                    val hero = heroes[page]
+                    HeroText(hero, page, false, hero.ref in state.watchlist, Modifier.align(Alignment.CenterStart),
+                        Modifier.focusRequester(firstFocus), { openDetails(hero) }, { toggleWatchlist(hero) })
                 }
             }
             // Phones: dots under the text (swipe to move). TV: ‹ dots › at the bottom-right, clear of the buttons.
@@ -115,7 +115,8 @@ fun HomeScreen(
                 heroes.indices.forEach { i ->
                     val current = i == pager.currentPage
                     Box(Modifier.size(if (current) 26.dp else 6.dp, 6.dp).background(if (current) Cs.accent else Color(0xFF5D7392), RoundedCornerShape(6.dp))
-                        .clickable { scope.launch { pager.animateScrollToPage(i) } })
+                        // Tappable on phones; on TV the dots stay out of D-pad focus (they have no focus look), ‹ › move instead.
+                        .then(if (compact) Modifier.clickable { scope.launch { pager.animateScrollToPage(i) } } else Modifier))
                 }
                 if (!compact) CsChip("›", false, compact = true) { step(1) }
             }
@@ -624,6 +625,26 @@ fun ServiceTiles(selected: Set<String>, firstFocus: FocusRequester? = null, onTo
                     }
                 }
             }
+        }
+    }
+}
+
+/** The home banner's text and buttons for one title: inside each page on phones, one fixed layer on TV. */
+@Composable
+private fun HeroText(
+    hero: TitleItem, page: Int, compact: Boolean, saved: Boolean, modifier: Modifier,
+    detailsModifier: Modifier, onDetails: () -> Unit, onWatchlist: () -> Unit
+) {
+    Column(if (compact) modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 34.dp).fillMaxWidth()
+        else modifier.padding(start = 40.dp).fillMaxWidth(.5f),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
+        Text("TRENDING #${page + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
+        Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
+        if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CsButton("Details", primary = true, modifier = detailsModifier) { onDetails() }
+            CsButton(if (saved) "✓ Saved" else "+ Watchlist") { onWatchlist() }
         }
     }
 }
