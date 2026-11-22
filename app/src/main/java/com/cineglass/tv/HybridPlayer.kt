@@ -159,6 +159,7 @@ fun NativePlayerScreen(
     }
 
     val viewFocus = remember { FocusRequester() }
+    val settingsFocus = remember { FocusRequester() }
     // Focus starts on the video's remote layer (not "Close"), so OK shows the controls instead of leaving.
     fun focusVideo() { runCatching { viewFocus.requestFocus() } }
     LaunchedEffect(playerView) { if (playerView != null) { delay(150); focusVideo() } }
@@ -178,7 +179,9 @@ fun NativePlayerScreen(
                     useController = true
                     controllerShowTimeoutMs = 4000
                     setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
-                    setShowSubtitleButton(true)
+                    // One settings menu (CineSays' ⚙ in the header), so the controller's own gear and CC button are hidden.
+                    setShowSubtitleButton(false)
+                    findViewById<android.view.View>(androidx.media3.ui.R.id.exo_settings)?.visibility = android.view.View.GONE
                     keepScreenOn = true
                     // The remote is handled by CineSays' focus layer below; the view draws video and controls (and
                     // takes touch) but never takes focus, so D-pad focus can't get lost inside it.
@@ -196,7 +199,7 @@ fun NativePlayerScreen(
             }, modifier = Modifier.fillMaxSize())
             // Remote layer over the video (no pointer handling, so touches still reach the player):
             // OK shows the controls, or toggles play/pause while they're up; Left/Right seek 10 s; Play/Pause toggles;
-            // Up moves to Quality / Audio / Subtitles / Speed.
+            // Up moves to the header (Close, Next episode, ⚙ Settings).
             Box(Modifier.fillMaxSize().focusRequester(viewFocus)
                 .onKeyEvent { ev ->
                     val pv = playerView
@@ -211,7 +214,7 @@ fun NativePlayerScreen(
                         Key.MediaPlay -> { player.play(); true }
                         Key.MediaPause -> { player.pause(); reveal(); true }
                         // Up: first reveal the controls and header; the next Up moves focus into the header buttons.
-                        Key.DirectionUp -> if (!pv.isControllerFullyVisible) { reveal(); true } else false
+                        Key.DirectionUp -> { if (!pv.isControllerFullyVisible) reveal() else runCatching { settingsFocus.requestFocus() }; true }
                         else -> false
                     }
                 }
@@ -265,12 +268,9 @@ fun NativePlayerScreen(
                 .onFocusChanged { headerFocused = it.hasFocus }, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val buttons: @Composable () -> Unit = {
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CsChip("Quality", false, compact = true) { picker = C.TRACK_TYPE_VIDEO }
-                        CsChip("Audio", false, compact = true) { picker = C.TRACK_TYPE_AUDIO }
-                        CsChip("Subtitles", false, compact = true) { picker = C.TRACK_TYPE_TEXT }
-                        CsChip("Speed", false, compact = true) { picker = SPEED }
-                        CsChip(if (fill) "Fit screen" else "Fill screen", fill, compact = true) { fill = !fill }
                         if (onNext != null) CsChip("Next episode ▸", false, compact = true) { report(); onNext() }
+                        // Quality, Audio, Subtitles, Speed and picture size live in one settings menu.
+                        CsChip("⚙ Settings", false, compact = true, modifier = Modifier.focusRequester(settingsFocus)) { picker = SETTINGS }
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -280,9 +280,8 @@ fun NativePlayerScreen(
                         Text(listOfNotNull(playback.sourceName.ifBlank { null }, playback.licence).joinToString(" · "), color = Cs.textSoft, fontSize = 12.sp,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    if (!compact) buttons()
+                    buttons()
                 }
-                if (compact) buttons()
             }
         }
 
@@ -308,10 +307,53 @@ fun NativePlayerScreen(
         }
     }
 
-    picker?.let { type -> TrackPicker(player, type, onSubtitlePref) { picker = null; focusVideo() } }
+    when (val type = picker) {
+        null -> Unit
+        SETTINGS -> PlayerSettings(player, fill, onOpen = { picker = it }, onFill = { fill = !fill; picker = null; focusVideo() },
+            onDone = { picker = null; focusVideo() })
+        // Choosing an option closes the menus; Back returns to the settings list.
+        else -> TrackPicker(player, type, onSubtitlePref, onBack = { picker = SETTINGS }) { picker = null; focusVideo() }
+    }
 }
 
 private const val SPEED = -100
+private const val SETTINGS = -200
+
+/** The player's settings list: each row shows its current value and opens that option's picker. */
+@OptIn(UnstableApi::class)
+@Composable
+private fun PlayerSettings(player: ExoPlayer, fill: Boolean, onOpen: (Int) -> Unit, onFill: () -> Unit, onDone: () -> Unit) {
+    fun current(type: Int): String {
+        val g = player.currentTracks.groups.filter { it.type == type }
+        val overridden = player.trackSelectionParameters.overrides.keys.any { k -> g.any { it.mediaTrackGroup == k } }
+        val sel = g.firstNotNullOfOrNull { gr -> (0 until gr.length).firstOrNull { gr.isTrackSelected(it) }?.let { gr.getTrackFormat(it) } }
+        return when {
+            type == C.TRACK_TYPE_TEXT && (sel == null || player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) -> "Off"
+            sel == null -> if (g.isEmpty()) "Not offered" else "Auto"
+            type == C.TRACK_TYPE_VIDEO && !overridden -> "Auto · ${trackLabel(sel, type)}"
+            else -> trackLabel(sel, type)
+        }
+    }
+    val speed = player.playbackParameters.speed
+    val rows = listOf(
+        Triple("Quality", current(C.TRACK_TYPE_VIDEO)) { onOpen(C.TRACK_TYPE_VIDEO) },
+        Triple("Audio", current(C.TRACK_TYPE_AUDIO)) { onOpen(C.TRACK_TYPE_AUDIO) },
+        Triple("Subtitles", current(C.TRACK_TYPE_TEXT)) { onOpen(C.TRACK_TYPE_TEXT) },
+        Triple("Playback speed", if (speed == 1f) "Normal" else "${speed}×") { onOpen(SPEED) },
+        Triple("Picture", if (fill) "Fill screen (crops edges)" else "Fit screen (whole picture)") { onFill() },
+    )
+    Dialog(onDismissRequest = onDone) {
+        val first = remember { FocusRequester() }
+        LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+        Column(Modifier.widthIn(min = 320.dp, max = 520.dp).heightIn(max = 560.dp).background(Cs.panel, RoundedCornerShape(20.dp))
+            .border(1.dp, Cs.line, RoundedCornerShape(20.dp)).padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Settings", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            rows.forEachIndexed { i, (label, value, open) ->
+                OptionRow(label, value, false, if (i == 0) Modifier.focusRequester(first) else Modifier, trailing = "›") { open() }
+            }
+        }
+    }
+}
 
 @Composable
 private fun TimeLabel(value: String, caption: String, align: Alignment.Horizontal) {
@@ -398,7 +440,7 @@ private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPref
 /** Quality / Audio / Subtitles / Speed picker. Lists only what the stream actually reports. */
 @OptIn(UnstableApi::class)
 @Composable
-private fun TrackPicker(player: ExoPlayer, type: Int, onSubtitlePref: (String?) -> Unit, onDone: () -> Unit) {
+private fun TrackPicker(player: ExoPlayer, type: Int, onSubtitlePref: (String?) -> Unit, onBack: () -> Unit, onDone: () -> Unit) {
     data class Opt(val label: String, val detail: String?, val selected: Boolean, val apply: () -> Unit)
     val tracks = player.currentTracks
     val params = player.trackSelectionParameters
@@ -417,7 +459,9 @@ private fun TrackPicker(player: ExoPlayer, type: Int, onSubtitlePref: (String?) 
             listOf(auto) + groups.flatMap { g ->
                 (0 until g.length).filter { g.isTrackSupported(it) }.map { i ->
                     val f = g.getTrackFormat(i)
-                    Opt(trackLabel(f, type), trackDetail(f, type), g.isTrackSelected(i)) {
+                    // Video adapts across many tracks; tick only the one you picked (Auto is ticked otherwise).
+                    val picked = if (type == C.TRACK_TYPE_VIDEO) params.overrides[g.mediaTrackGroup]?.trackIndices?.contains(i) == true else g.isTrackSelected(i)
+                    Opt(trackLabel(f, type), trackDetail(f, type), picked) {
                         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                             .setTrackTypeDisabled(type, false).setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
                         if (type == C.TRACK_TYPE_TEXT) onSubtitlePref(f.language)
@@ -427,12 +471,15 @@ private fun TrackPicker(player: ExoPlayer, type: Int, onSubtitlePref: (String?) 
         }
     }
     val title = when (type) { C.TRACK_TYPE_VIDEO -> "Quality"; C.TRACK_TYPE_AUDIO -> "Audio"; C.TRACK_TYPE_TEXT -> "Subtitles"; else -> "Playback speed" }
-    Dialog(onDismissRequest = onDone) {
+    Dialog(onDismissRequest = onBack) {
         val first = remember { FocusRequester() }
         LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
         Column(Modifier.widthIn(min = 320.dp, max = 520.dp).heightIn(max = 520.dp).background(Cs.panel, RoundedCornerShape(20.dp))
             .border(1.dp, Cs.line, RoundedCornerShape(20.dp)).padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CsChip("‹", false, compact = true) { onBack() }
+                Text(title, color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
             if (opts.size <= 1 && type != SPEED) Text("This stream offers only one ${title.lowercase()} option.", color = Cs.textMuted, fontSize = 13.sp)
             val start = opts.indexOfFirst { it.selected }.coerceAtLeast(0)
             opts.forEachIndexed { i, o ->
@@ -443,7 +490,7 @@ private fun TrackPicker(player: ExoPlayer, type: Int, onSubtitlePref: (String?) 
 }
 
 @Composable
-private fun OptionRow(label: String, detail: String?, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun OptionRow(label: String, detail: String?, selected: Boolean, modifier: Modifier, trailing: String? = null, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
     Row(modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.clip(shape)
@@ -454,6 +501,7 @@ private fun OptionRow(label: String, detail: String?, selected: Boolean, modifie
             detail?.let { Text(it, color = Cs.textMuted, fontSize = 12.sp) }
         }
         if (selected) Text("✓", color = Cs.accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        trailing?.let { Text(it, color = Cs.textSoft, fontSize = 22.sp) }
     }
 }
 

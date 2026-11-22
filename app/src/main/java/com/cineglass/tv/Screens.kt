@@ -6,6 +6,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,6 +55,7 @@ val DISCOVER_GENRES = listOf(
 
 // ───────────────────────────── Home ─────────────────────────────
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     state: ScreenState, upNext: List<UpNextEntry>, firstFocus: FocusRequester,
@@ -80,9 +82,12 @@ fun HomeScreen(
     }
     fun step(by: Int) { if (heroes.size > 1) scope.launch { pager.animateScrollToPage((pager.currentPage + by + heroes.size) % heroes.size) } }
 
+    // Coming back up from the rows below, show the whole banner, not just the strip around the focused button.
+    val heroInView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
-        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))
-            .onFocusChanged { heroFocused = it.hasFocus }) {
+        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).bringIntoViewRequester(heroInView).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))
+            .onFocusChanged { val gained = it.hasFocus && !heroFocused; heroFocused = it.hasFocus
+                if (gained) scope.launch { delay(30); heroInView.bringIntoView() } }) {
             if (heroes.isEmpty()) {
                 Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(if (compact) 20.dp else 40.dp), color = Cs.text, fontSize = 26.sp)
             } else {
