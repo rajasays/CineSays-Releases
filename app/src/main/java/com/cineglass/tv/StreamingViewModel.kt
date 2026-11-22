@@ -102,6 +102,19 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Continue watching › Remove: drops the title here and, through account sync, on your other devices. */
+    fun removeFromContinueWatching(r: PlaybackRecord) {
+        _state.update { s -> s.copy(continueWatching = s.continueWatching.filterNot { it.key == r.key }) }
+        viewModelScope.launch(Dispatchers.IO) { store.removeEverywhere(r.key) }
+    }
+
+    /** Account sync: positions and removals, as part of the cloud backup. */
+    fun exportPlayback(): org.json.JSONObject = store.exportJson()
+    suspend fun importPlayback(o: org.json.JSONObject) {
+        withContext(Dispatchers.IO) { runCatching { store.importJson(o) } }
+        refreshContinueWatching()
+    }
+
     fun updatePrefs(transform: (PlaybackPrefs) -> PlaybackPrefs) {
         val v = transform(_state.value.prefs)
         PlaybackPrefs.save(app, v)

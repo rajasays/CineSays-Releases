@@ -164,12 +164,20 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
 
     // Cloud backup: everything that should follow you to another device.
     suspend fun backupJson(): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        org.json.JSONObject().put("v", 1).put("tracker", org.json.JSONObject(tracker.exportData())).put("prefs", org.json.JSONObject(vm.exportPrefs())).toString()
+        org.json.JSONObject().put("v", 1).put("tracker", org.json.JSONObject(tracker.exportData())).put("prefs", org.json.JSONObject(vm.exportPrefs()))
+            .put("playback", streaming.exportPlayback()).toString()
     }
     suspend fun restoreJson(json: String) {
         val o = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return
         o.optJSONObject("prefs")?.let { vm.importPrefs(it.toString()) }
         o.optJSONObject("tracker")?.let { tracker.importData(it.toString()) }
+        o.optJSONObject("playback")?.let { streaming.importPlayback(it) } // Continue watching and resume points
+    }
+    /** Pull and merge what other devices saved, then push the result, so nothing newer elsewhere is overwritten. */
+    suspend fun syncNow() {
+        if (socialState.email == null) return
+        social.downloadBackup()?.let { restoreJson(it) }
+        social.uploadBackup(backupJson())
     }
     // Outside requests (notification taps): go to the tab, the tracked show, or the title's details.
     LaunchedEffect(nav) {
@@ -199,14 +207,30 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     }
     // Back up automatically when the app goes to the background (signed-in accounts only, at most every 10 min).
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    // Coming back to the app (from another app, the screensaver or another device): pull what your other devices
+    // saved, so Continue watching and resume points are current. At most once a minute.
+    var lastPull by remember { mutableLongStateOf(System.currentTimeMillis()) }
     DisposableEffect(lifecycle, socialState.email) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_START && socialState.email != null && System.currentTimeMillis() - lastPull > 60_000L) {
+                lastPull = System.currentTimeMillis()
+                scope.launch { social.downloadBackup()?.let { restoreJson(it) } }
+            }
             if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP && socialState.email != null && System.currentTimeMillis() - socialState.lastBackupAt > 10 * 60_000L)
-                scope.launch { social.uploadBackup(backupJson()) }
+                scope.launch { syncNow() }
         }
         lifecycle.addObserver(obs); onDispose { lifecycle.removeObserver(obs) }
     }
 
+    // Closing the player or removing a title: share the new position with your other devices right away.
+    var wasPlaying by remember { mutableStateOf(false) }
+    LaunchedEffect(streamState.playing == null) {
+        if (streamState.playing != null) { wasPlaying = true; return@LaunchedEffect }
+        if (!wasPlaying || socialState.email == null) return@LaunchedEffect
+        wasPlaying = false
+        delay(1500) // let the final position save first
+        syncNow()
+    }
     LaunchedEffect(Unit) { tracker.loadReleases() } // feeds Home's "Up next" row (cached 30 min)
     LaunchedEffect(tab, focusHomeOnReturn) {
         if (tab == "Home" && focusHomeOnReturn) { delay(80); runCatching { homeTabFocus.requestFocus() }; focusHomeOnReturn = false }
@@ -286,10 +310,14 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             when (tab) {
                 "Home" -> HomeScreen(state, upNext, heroFocus, openDetails = vm::select, toggleWatchlist = vm::toggle,
                     continueWatching = streamState.continueWatching,
+                    onRemoveContinue = { r -> streaming.removeFromContinueWatching(r); scope.launch { delay(800); syncNow() } },
                     onResume = { r -> streaming.resume(r) { rec -> rec.ref()?.let(::openWatchNowFor) } },
                     onResumeDetails = { r -> r.ref()?.let { ref -> vm.selectById(if (ref.type == MediaType.MOVIE) "movie" else "tv", ref.tmdbId) } },
                     openTracker = { tab = "Tracker" }, openServices = { tab = "Settings" },
                     markWatched = { e -> tracker.mark(e.show, e.episode.season, e.episode.number, true) },
+                    watchUpNext = { e -> trackerUi.shows.firstOrNull { it.title == e.show && it.tmdbId > 0 }?.let { sh ->
+                        { openWatchNowFor(MediaRef(MediaType.EPISODE, sh.tmdbId, sh.title, season = e.episode.season, episode = e.episode.number,
+                            episodeName = e.episode.name.ifBlank { null }, poster = sh.poster)) } } },
                     // Up next card → that series in Tracker (season and episodes), not "mark watched".
                     openShow = { e -> tab = "Tracker"; tracker.selectTab(TRACKER_HOME_TAB)
                         trackerUi.shows.firstOrNull { it.title == e.show }?.let(tracker::selectShow) })
@@ -299,7 +327,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                 // Legal free watching: live channels and public-domain films play in-app; free-with-ads titles open their apps.
                 "Free" -> FreeScreen(state, ctx, onPlayFilm = { f -> streaming.playFreeFilm(f) },
                     onPlayLive = { ch -> vm.play(Playable.Live("${ch.name} · Live", ch.youtubeChannelId)) }, onOpenTitle = vm::select)
-                "Tracker" -> CineTrackerPage(tracker) { kind, id -> vm.selectById(kind, id) }
+                "Tracker" -> CineTrackerPage(tracker, openTitle = { kind, id -> vm.selectById(kind, id) }, onWatchNow = ::openWatchNowFor)
                 "Watchlist" -> {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("Watchlist", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)

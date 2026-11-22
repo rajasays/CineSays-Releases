@@ -43,7 +43,7 @@ data class PlaybackRecord(
     }
 }
 
-class PlaybackStore private constructor(context: Context) : SQLiteOpenHelper(context, "playback.db", null, 1) {
+class PlaybackStore private constructor(private val context: Context) : SQLiteOpenHelper(context, "playback.db", null, 1) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE progress(key TEXT PRIMARY KEY, type TEXT NOT NULL, tmdb INTEGER NOT NULL DEFAULT 0,
             season INTEGER, episode INTEGER, title TEXT NOT NULL, episode_name TEXT, poster TEXT, imdb TEXT,
@@ -67,6 +67,67 @@ class PlaybackStore private constructor(context: Context) : SQLiteOpenHelper(con
     }
 
     fun remove(key: String) { writableDatabase.delete("progress", "key=?", arrayOf(key)) }
+
+    // ── Sync across signed-in devices (part of the account backup) ──
+    // Each title's newest position wins. Removing a title from Continue watching leaves a dated marker, so the
+    // removal reaches other devices instead of the title coming back from their copy.
+
+    private val removedPrefs = context.getSharedPreferences("playback_removed", Context.MODE_PRIVATE)
+
+    /** "Remove from Continue watching": forget the position here and on your other devices. */
+    fun removeEverywhere(key: String) {
+        remove(key)
+        removedPrefs.edit().putLong(key, System.currentTimeMillis()).apply()
+    }
+
+    fun exportJson(): org.json.JSONObject {
+        val records = org.json.JSONArray()
+        readableDatabase.rawQuery("SELECT * FROM progress WHERE type!='test' ORDER BY updated DESC LIMIT 300", null).use { c ->
+            while (c.moveToNext()) read(c).let { r ->
+                records.put(org.json.JSONObject().put("key", r.key).put("type", r.type).put("tmdb", r.tmdbId)
+                    .put("season", r.season ?: org.json.JSONObject.NULL).put("episode", r.episode ?: org.json.JSONObject.NULL)
+                    .put("title", r.title).put("episodeName", r.episodeName).put("poster", r.poster).put("imdb", r.imdbId)
+                    .put("position", r.positionMs).put("duration", r.durationMs).put("updated", r.updatedAt).put("completed", r.completed)
+                    // Only links another device can open: no addresses served from this device itself.
+                    .put("streamUrl", r.streamUrl?.takeIf { shareable(it) }).put("streamKind", r.streamKind)
+                    .put("sourceName", r.sourceName).put("licence", r.licence))
+            }
+        }
+        val cutoff = System.currentTimeMillis() - 180L * 24 * 60 * 60 * 1000
+        val removed = org.json.JSONObject()
+        removedPrefs.all.forEach { (k, v) -> (v as? Long)?.takeIf { it > cutoff }?.let { removed.put(k, it) } }
+        return org.json.JSONObject().put("records", records).put("removed", removed)
+    }
+
+    fun importJson(o: org.json.JSONObject) {
+        val removed = o.optJSONObject("removed")
+        val edit = removedPrefs.edit()
+        removed?.keys()?.forEach { k ->
+            val at = removed.optLong(k)
+            if (at > removedPrefs.getLong(k, 0)) edit.putLong(k, at)
+            get(k)?.let { if (it.updatedAt <= at) remove(k) }
+        }
+        edit.apply()
+        val arr = o.optJSONArray("records") ?: return
+        for (i in 0 until arr.length()) {
+            val j = arr.optJSONObject(i) ?: continue
+            fun str(n: String) = j.optString(n).takeIf { !j.isNull(n) && it.isNotEmpty() }
+            fun int(n: String) = if (j.isNull(n) || !j.has(n)) null else j.optInt(n)
+            val key = str("key") ?: continue
+            val updated = j.optLong("updated")
+            if (removedPrefs.getLong(key, 0) >= updated) continue
+            val local = get(key)
+            if (local != null && local.updatedAt >= updated) continue
+            save(PlaybackRecord(key, str("type") ?: continue, j.optInt("tmdb"), int("season"), int("episode"), str("title") ?: continue,
+                str("episodeName"), str("poster"), str("imdb"), j.optLong("position"), j.optLong("duration"), updated, j.optBoolean("completed"),
+                str("streamUrl") ?: local?.streamUrl, str("streamKind") ?: local?.streamKind, str("sourceName"), str("licence")))
+        }
+    }
+
+    private fun shareable(url: String): Boolean {
+        val host = runCatching { android.net.Uri.parse(url).host }.getOrNull()?.lowercase() ?: return false
+        return url.startsWith("http") && host != "localhost" && host != "127.0.0.1" && host != "::1" && !host.startsWith("192.168.") && !host.startsWith("10.")
+    }
 
     /** Started but not finished, most recent first. */
     fun continueWatching(limit: Int = 20): List<PlaybackRecord> =

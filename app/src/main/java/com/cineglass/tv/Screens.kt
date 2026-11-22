@@ -62,7 +62,9 @@ fun HomeScreen(
     openDetails: (TitleItem) -> Unit, toggleWatchlist: (TitleItem) -> Unit,
     openTracker: () -> Unit, openServices: () -> Unit, markWatched: (UpNextEntry) -> Unit,
     openShow: (UpNextEntry) -> Unit = { openTracker() },
-    continueWatching: List<PlaybackRecord> = emptyList(), onResume: (PlaybackRecord) -> Unit = {}, onResumeDetails: (PlaybackRecord) -> Unit = {}
+    continueWatching: List<PlaybackRecord> = emptyList(), onResume: (PlaybackRecord) -> Unit = {}, onResumeDetails: (PlaybackRecord) -> Unit = {}, onRemoveContinue: (PlaybackRecord) -> Unit = {},
+    /** Watch Now for an Up next episode; null when the show isn't matched to TMDB. */
+    watchUpNext: (UpNextEntry) -> (() -> Unit)? = { null }
 ) {
     val compact = LocalCompact.current
     val heroes = remember(state.sections) {
@@ -133,7 +135,7 @@ fun HomeScreen(
         }
 
         // Titles started in CineSays' own player, resumable where they stopped.
-        ContinueWatchingRow(continueWatching, onResume, onResumeDetails)
+        ContinueWatchingRow(continueWatching, onResume, onResumeDetails, onRemoveContinue)
 
         if (upNext.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -141,7 +143,7 @@ fun HomeScreen(
                 CsChip("Open Tracker", false) { openTracker() }
             }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
-                items(upNext.take(20), key = { it.show }) { e -> UpNextCard(e, onWatched = { markWatched(e) }, onOpen = { openShow(e) }) }
+                items(upNext.take(20), key = { it.show }) { e -> UpNextCard(e, onWatched = { markWatched(e) }, onOpen = { openShow(e) }, onWatchNow = watchUpNext(e)) }
             }
         }
 
@@ -167,7 +169,7 @@ fun HomeScreen(
 
 /** Selecting the card opens the series in Tracker; the ✓ button below it marks the episode watched. */
 @Composable
-private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit) {
+private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit, onWatchNow: (() -> Unit)? = null) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
     Column(Modifier.width(268.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -185,7 +187,10 @@ private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit
                 Text(if (focused) "Select: open in Tracker" else e.detail, color = if (focused) Cs.accent else Cs.textMuted, fontSize = 11.sp)
             }
         }
-        CsChip("✓ Watched S${e.episode.season}E${e.episode.number}", false, compact = true) { onWatched() }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            onWatchNow?.let { CsChip("▶ Watch Now", false, compact = true) { it() } }
+            CsChip("✓ Watched S${e.episode.season}E${e.episode.number}", false, compact = true) { onWatched() }
+        }
     }
 }
 

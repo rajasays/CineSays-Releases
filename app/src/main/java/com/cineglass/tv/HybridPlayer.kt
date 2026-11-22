@@ -920,18 +920,18 @@ private fun formatSize(b: Long): String = if (b >= 1L shl 30) "%.1f GB".format(b
 // ───────────────────────────── Home: Continue watching ─────────────────────────────
 
 @Composable
-fun ContinueWatchingRow(items: List<PlaybackRecord>, onResume: (PlaybackRecord) -> Unit, onDetails: (PlaybackRecord) -> Unit) {
+fun ContinueWatchingRow(items: List<PlaybackRecord>, onResume: (PlaybackRecord) -> Unit, onDetails: (PlaybackRecord) -> Unit, onRemove: (PlaybackRecord) -> Unit = {}) {
     if (items.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         CsSectionTitle("Continue watching")
         LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
-            items(items, key = { it.key }) { r -> ContinueCard(r, { onResume(r) }, { onDetails(r) }) }
+            items(items, key = { it.key }) { r -> ContinueCard(r, { onResume(r) }, { onDetails(r) }, { onRemove(r) }) }
         }
     }
 }
 
 @Composable
-private fun ContinueCard(r: PlaybackRecord, onResume: () -> Unit, onDetails: () -> Unit) {
+private fun ContinueCard(r: PlaybackRecord, onResume: () -> Unit, onDetails: () -> Unit, onRemove: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
     val image = r.poster?.let { if (it.startsWith("http")) it else "https://image.tmdb.org/t/p/w342$it" }
@@ -945,8 +945,20 @@ private fun ContinueCard(r: PlaybackRecord, onResume: () -> Unit, onDetails: () 
         LinearProgressIndicator(progress = { r.fraction.toFloat() }, modifier = Modifier.fillMaxWidth().height(4.dp), color = Cs.accent, trackColor = Cs.line)
         Text(r.title, color = if (focused) Cs.text else Cs.textSoft, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(r.subtitle, color = Cs.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (r.ref() != null) Text("Details", color = Cs.accent, fontSize = 11.sp, modifier = Modifier.clickable(onClick = onDetails).padding(vertical = 2.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (r.ref() != null) CardLink("Details", Cs.accent, onDetails)
+            CardLink("✕ Remove", Cs.textMuted, onRemove) // also leaves Continue watching on your other devices
+        }
     }
+}
+
+/** A small text action under a card, with a visible highlight when the remote is on it. */
+@Composable
+private fun CardLink(label: String, color: Color, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Text(label, color = if (focused) Cs.bg else color, fontSize = 11.sp, fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
+        modifier = Modifier.onFocusChanged { focused = it.isFocused }.clip(RoundedCornerShape(6.dp))
+            .background(if (focused) Cs.text else Color.Transparent).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 3.dp))
 }
 
 // ───────────────────────────── Settings › Playback & Streaming ─────────────────────────────

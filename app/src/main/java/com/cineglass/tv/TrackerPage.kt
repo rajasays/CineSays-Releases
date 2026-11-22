@@ -52,7 +52,7 @@ private fun TrackButton(text:String, active:Boolean=false, modifier:Modifier=Mod
     }
 }
 @Composable
-fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _, _ -> }){
+fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _, _ -> }, onWatchNow: (MediaRef) -> Unit = {}){
     val state by vm.ui.collectAsState()
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri: Uri?->uri?.let(vm::prepare)}
     val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){ok->vm.setReminders(ok)}
@@ -190,9 +190,9 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
             }
         }
         state.chosen?.let{selected->
-            TrackerSeriesDetail(selected,state,vm)
+            TrackerSeriesDetail(selected,state,vm,onWatchNow)
         } ?: when(state.tab){
-            TRACKER_HOME_TAB -> UpNextPanel(state, upNext, today, vm,
+            TRACKER_HOME_TAB -> UpNextPanel(state, upNext, today, vm, onWatchNow,
                 onImport = { picker.launch(arrayOf("application/zip","application/x-zip-compressed","application/octet-stream")) })
             "Calendar & Releases"->{
                 Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -357,7 +357,13 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
 private val UP_NEXT_BOX_HEIGHT = 440.dp
 
 /** Up Next: week strip, one card per show with one-press "Watched", and Coming soon. */
-@Composable private fun UpNextPanel(state: TrackerUiState, upNext: List<UpNextEntry>, today: LocalDate, vm: TrackerViewModel, onImport: () -> Unit) {
+/** Watch Now for one tracked episode (only for shows matched to TMDB). */
+private fun episodeRef(show: TrackedShow?, season: Int, number: Int, name: String?): MediaRef? =
+    show?.takeIf { it.tmdbId > 0 }?.let { MediaRef(MediaType.EPISODE, it.tmdbId, it.title, season = season, episode = number,
+        episodeName = name?.ifBlank { null }, poster = it.poster) }
+
+@Composable private fun UpNextPanel(state: TrackerUiState, upNext: List<UpNextEntry>, today: LocalDate, vm: TrackerViewModel,
+                                    onWatchNow: (MediaRef) -> Unit, onImport: () -> Unit) {
     val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
     val narrow = LocalCompact.current
     Row(horizontalArrangement = Arrangement.spacedBy(if (narrow) 4.dp else 8.dp)) {
@@ -398,6 +404,7 @@ private val UP_NEXT_BOX_HEIGHT = 440.dp
                 .clip(RoundedCornerShape(16.dp)).verticalScroll(rememberScrollState()).padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
             upNext.forEach { e ->
+                val watchRef = episodeRef(state.shows.firstOrNull { it.title == e.show }, e.episode.season, e.episode.number, e.episode.name)
                 Row(Modifier.fillMaxWidth().border(1.dp, Cs.line, RoundedCornerShape(14.dp)).background(Cs.surface, RoundedCornerShape(14.dp)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     AsyncImage(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w185$it" },
@@ -406,14 +413,12 @@ private val UP_NEXT_BOX_HEIGHT = 440.dp
                         Text(e.show, color = Cs.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("S${e.episode.season} E${e.episode.number} · ${e.episode.name}", color = Cs.textSoft, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(e.detail, color = Cs.textMuted, fontSize = 12.sp)
-                        if (compact) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Actions sit under the text on every screen, so three buttons never squeeze the title out.
+                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            watchRef?.let { CsChip("▶ Watch Now", false, compact = true) { onWatchNow(it) } }
                             CsChip("✓ Watched", false, compact = true) { vm.mark(e.show, e.episode.season, e.episode.number, true) }
                             CsChip("Open", false, compact = true) { state.shows.firstOrNull { it.title == e.show }?.let(vm::selectShow) }
                         }
-                    }
-                    if (!compact) {
-                        CsButton("✓ Watched", primary = true) { vm.mark(e.show, e.episode.season, e.episode.number, true) }
-                        CsButton("Open") { state.shows.firstOrNull { it.title == e.show }?.let(vm::selectShow) }
                     }
                 }
             }
@@ -478,8 +483,27 @@ private val UP_NEXT_BOX_HEIGHT = 440.dp
         }
     }
 }
-@Composable private fun TrackerSeriesDetail(show:TrackedShow,state:TrackerUiState,vm:TrackerViewModel){
+@Composable private fun TrackerSeriesDetail(show:TrackedShow,state:TrackerUiState,vm:TrackerViewModel,onWatchNow:(MediaRef)->Unit){
     val watched=state.chosenWatched // loaded on IO by the view model
+    // Selecting an episode asks what to do: watch it, or mark it watched / unwatched.
+    var chosenEp by remember(show.title) { mutableStateOf<TrackerEpisode?>(null) }
+    chosenEp?.let { ep ->
+        val done=(ep.season to ep.number) in watched
+        val ref=episodeRef(show,ep.season,ep.number,ep.name)
+        androidx.compose.ui.window.Dialog(onDismissRequest={chosenEp=null}){
+            val first=remember{FocusRequester()}
+            LaunchedEffect(Unit){kotlinx.coroutines.delay(60);runCatching{first.requestFocus()}}
+            Column(Modifier.widthIn(min=300.dp,max=460.dp).background(Cs.panel,RoundedCornerShape(20.dp)).border(1.dp,Cs.line,RoundedCornerShape(20.dp)).padding(22.dp),
+                verticalArrangement=Arrangement.spacedBy(12.dp)){
+                Text(show.title,color=Cs.textMuted,fontSize=13.sp)
+                Text("S${ep.season} E${ep.number} · ${ep.name}",color=Cs.text,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=2,overflow=TextOverflow.Ellipsis)
+                if(ref!=null) CsButton("▶ Watch Now",primary=true,modifier=Modifier.fillMaxWidth().focusRequester(first)){chosenEp=null;onWatchNow(ref)}
+                CsButton(if(done)"○ Mark unwatched" else "✓ Mark watched",primary=ref==null,
+                    modifier=Modifier.fillMaxWidth().then(if(ref==null)Modifier.focusRequester(first) else Modifier)){chosenEp=null;vm.mark(show.title,ep.season,ep.number,!done)}
+                CsButton("Cancel",modifier=Modifier.fillMaxWidth()){chosenEp=null}
+            }
+        }
+    }
     TrackPanel(Modifier.fillMaxWidth()){
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){
             TrackButton("← Back to tracker"){vm.closeShow()}
@@ -514,7 +538,7 @@ private val UP_NEXT_BOX_HEIGHT = 440.dp
                 var focused by remember(show.title,ep.season,ep.number){mutableStateOf(false)}
                 Column(Modifier.weight(1f).onFocusChanged{ focused=it.isFocused }
                     .border(if(focused)3.dp else 1.dp,if(focused)Color.Cyan else if(done)Color(0xFF2CA876) else Color(0xFF416587),RoundedCornerShape(10.dp))
-                    .background(Color(0xFF10273B),RoundedCornerShape(10.dp)).clickable{vm.mark(show.title,ep.season,ep.number,!done)}.padding(9.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                    .background(Color(0xFF10273B),RoundedCornerShape(10.dp)).clickable{chosenEp=ep}.padding(9.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                     AsyncImage(model=ep.still?.let{"https://image.tmdb.org/t/p/w300$it"},contentDescription=null,modifier=Modifier.fillMaxWidth().height(75.dp).clip(RoundedCornerShape(7.dp)),contentScale=ContentScale.Crop)
                     Text("E${ep.number} · ${ep.name}",color=trackerWhite,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
                     Text(ep.airDate.orEmpty(),color=trackerMuted,fontSize=10.sp)
