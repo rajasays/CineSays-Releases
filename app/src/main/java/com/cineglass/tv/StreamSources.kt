@@ -114,7 +114,8 @@ object StreamRepository {
     }
 
     suspend fun search(context: Context, ref: MediaRef, force: Boolean = false): StreamSearch {
-        if (!force) synchronized(cache) { cache[ref.key]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
+        val cacheKey = "${ref.key}:${ref.stremioId.orEmpty()}"
+        if (!force) synchronized(cache) { cache[cacheKey]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
         if (force) clearCache()
         Addons.refresh(context, force = force)
         val results = coroutineScope {
@@ -132,7 +133,7 @@ object StreamRepository {
         val search = StreamSearch(streams, failures)
         if (failures.isEmpty()) synchronized(cache) {
             if (cache.size >= 64) cache.entries.minByOrNull { it.value.first }?.let { cache.remove(it.key) }
-            cache[ref.key] = System.currentTimeMillis() to search
+            cache[cacheKey] = System.currentTimeMillis() to search
         }
         return search
     }
