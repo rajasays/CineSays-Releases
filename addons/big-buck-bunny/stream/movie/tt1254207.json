@@ -7,6 +7,13 @@
       "behaviorHints": {
         "filename": "big_buck_bunny_720p_surround.mp4"
       }
+    },
+    {
+      "name": "Big Buck Bunny (WebTorrent MP4)",
+      "infoHash": "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c",
+      "behaviorHints": {
+        "filename": "Big Buck Bunny.mp4"
+      }
     }
   ]
 }
