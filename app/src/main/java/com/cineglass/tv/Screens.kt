@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -67,31 +68,56 @@ fun HomeScreen(
             .filter { it.backdrop != null }.take(5)
             .ifEmpty { state.sections.flatMap { it.items }.filter { it.backdrop != null }.take(1) }
     }
-    var heroIndex by remember(heroes) { mutableIntStateOf(0) }
-    LaunchedEffect(heroes) { while (heroes.size > 1) { delay(9000); heroIndex = (heroIndex + 1) % heroes.size } }
-    val hero = heroes.getOrNull(heroIndex)
+    // Rotating banner: swipe it on phones, use ‹ › with the remote, and it still advances on its own every 9 s.
+    // Auto-advance pauses while you're swiping or while the banner's buttons have focus.
+    val pager = androidx.compose.foundation.pager.rememberPagerState { heroes.size.coerceAtLeast(1) }
+    var heroFocused by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(heroes, pager.settledPage, heroFocused) {
+        if (heroes.size < 2 || heroFocused) return@LaunchedEffect
+        delay(9000)
+        if (!pager.isScrollInProgress) pager.animateScrollToPage((pager.settledPage + 1) % heroes.size)
+    }
+    fun step(by: Int) { if (heroes.size > 1) scope.launch { pager.animateScrollToPage((pager.currentPage + by + heroes.size) % heroes.size) } }
 
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
-        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))) {
-            hero?.let { AsyncImage(it.hero(), it.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
-            Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
-                else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
-            if (hero == null) {
+        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))
+            .onFocusChanged { heroFocused = it.hasFocus }) {
+            if (heroes.isEmpty()) {
                 Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(if (compact) 20.dp else 40.dp), color = Cs.text, fontSize = 26.sp)
-            } else Column(if (compact) Modifier.align(Alignment.BottomStart).padding(20.dp).fillMaxWidth() else Modifier.align(Alignment.CenterStart).padding(start = 40.dp).fillMaxWidth(.5f),
-                verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
-                Text("TRENDING #${heroIndex + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
-                Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
-                if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CsButton("Details", primary = true, modifier = Modifier.focusRequester(firstFocus)) { openDetails(hero) }
-                    CsButton(if (hero.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { toggleWatchlist(hero) }
+            } else androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.fillMaxSize(), key = { heroes[it].ref }) { page ->
+                val hero = heroes[page]
+                Box(Modifier.fillMaxSize()) {
+                    AsyncImage(hero.hero(), hero.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
+                        else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
+                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
+                    Column(if (compact) Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 34.dp).fillMaxWidth()
+                        else Modifier.align(Alignment.CenterStart).padding(start = 40.dp).fillMaxWidth(.5f),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
+                        Text("TRENDING #${page + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
+                        Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
+                        if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            // Only the page on screen owns the first-focus target, so the remote lands on what you see.
+                            CsButton("Details", primary = true, modifier = if (page == pager.currentPage) Modifier.focusRequester(firstFocus) else Modifier) { openDetails(hero) }
+                            CsButton(if (hero.ref in state.watchlist) "✓ Saved" else "+ Watchlist") { toggleWatchlist(hero) }
+                        }
+                    }
                 }
             }
-            if (heroes.size > 1 && !compact) Row(Modifier.align(Alignment.BottomStart).padding(start = 40.dp, bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                heroes.indices.forEach { i -> Box(Modifier.size(if (i == heroIndex) 26.dp else 6.dp, 6.dp).background(if (i == heroIndex) Cs.accent else Color(0xFF5D7392), RoundedCornerShape(6.dp))) }
+            // Phones: dots under the text (swipe to move). TV: ‹ dots › at the bottom-right, clear of the buttons.
+            if (heroes.size > 1) Row(Modifier.align(if (compact) Alignment.BottomStart else Alignment.BottomEnd)
+                .padding(start = 20.dp, end = if (compact) 20.dp else 28.dp, bottom = if (compact) 12.dp else 22.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                if (!compact) CsChip("‹", false, compact = true) { step(-1) }
+                heroes.indices.forEach { i ->
+                    val current = i == pager.currentPage
+                    Box(Modifier.size(if (current) 26.dp else 6.dp, 6.dp).background(if (current) Cs.accent else Color(0xFF5D7392), RoundedCornerShape(6.dp))
+                        .clickable { scope.launch { pager.animateScrollToPage(i) } })
+                }
+                if (!compact) CsChip("›", false, compact = true) { step(1) }
             }
         }
 

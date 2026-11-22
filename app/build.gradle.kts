@@ -58,6 +58,12 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 dependencies {
+    val torrentVersion = "2.0.12.9"
+    implementation("com.frostwire:jlibtorrent:$torrentVersion")
+    runtimeOnly("com.frostwire:jlibtorrent-android-arm:$torrentVersion")
+    runtimeOnly("com.frostwire:jlibtorrent-android-arm64:$torrentVersion")
+    runtimeOnly("com.frostwire:jlibtorrent-android-x86:$torrentVersion")
+    runtimeOnly("com.frostwire:jlibtorrent-android-x86_64:$torrentVersion")
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.9.3")

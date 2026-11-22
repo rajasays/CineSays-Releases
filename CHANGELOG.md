@@ -1,3 +1,15 @@
+## 2026-11-22 — Source heading cleanup and size order
+
+Neutral source card headings, smallest-first size ordering, and removal of Real-Debrid playback and Settings controls. See SOURCE-ORDER-UPDATE.md for scope and validation.
+
+## 2026-11-22 — Source details and loading improvements
+
+Renamed the torrent section to Other Sources, added detailed source cards, retained provider descriptions, reused manifests/registry data, added cancellable HTTP discovery and bounded playback read-ahead. See SOURCE-DETAILS-UPDATE.md for complete changes and validation limits.
+
+## 2026-11-22 — Opt-in add-on torrent sources
+
+Added optional Torrentio discovery, general validated file-index selection, free-space checks, seek-piece priority, and torrent lifecycle cleanup for Next episode. Preserved existing screens, layouts, navigation, themes, D-pad handlers, Trakker and Real-Debrid paths. See TORRENTIO-INTEGRATION.md for the complete file-by-file changelog and installation steps. Build and JVM tests are blocked here before compilation by the unavailable Gradle download; Android Studio validation is required.
+
 # CineSays 1.8.0 — Hybrid player
 - Watch Now: one button on every movie and series page shows every way to watch: play in CineSays (legal sources), open your streaming service, or open in Stremio (when installed). Series pick a season and episode first, with watched marks, progress and "Mark watched".
 - New CineSays player: HLS, DASH and MP4; Quality, Audio, Subtitles and Speed pickers that list what the stream really offers; remote control (Left/Right seek 10 s, Play/Pause, Back); clear error messages with Retry.

@@ -1,0 +1,16 @@
+{
+  "id": "cinesays.big-buck-bunny-test",
+  "version": "1.0.0",
+  "name": "Big Buck Bunny test",
+  "description": "Big Buck Bunny (2008), Blender Foundation, CC BY 3.0. Real-Debrid playback test.",
+  "resources": [
+    "stream"
+  ],
+  "types": [
+    "movie"
+  ],
+  "idPrefixes": [
+    "tt1254207"
+  ],
+  "catalogs": []
+}

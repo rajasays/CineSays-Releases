@@ -192,6 +192,7 @@ class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     fun toggleAddon(id: String) {
         val a = Addons.all.firstOrNull { it.id == id } ?: return
         Addons.setOn(app, id, !Addons.isOn(app, a))
+        if (a.engine == Addons.STREMIO) StreamRepository.clearCache()
         publishAddons()
         _state.update { it.copy(freeCatalogs = emptyList()) } // reload rows on the next visit to Free
     }

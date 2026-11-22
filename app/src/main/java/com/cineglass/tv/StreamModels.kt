@@ -43,6 +43,11 @@ enum class StreamKind { PROGRESSIVE, HLS, DASH, YOUTUBE, TORRENT, EXTERNAL, UNKN
 
 data class SubtitleTrack(val url: String, val language: String?, val label: String?, val mimeType: String?)
 
+data class DebridTorrent(
+    val hash: String, val fileIndex: Int?, val filename: String?,
+    val directPlayback: Boolean = false, val debridPlayback: Boolean = true
+)
+
 /**
  * One source a provider found. Only facts the provider stated are filled in: technical details
  * (resolution, codec, HDR, audio, size) stay null when unknown and are shown as unknown, never guessed
@@ -67,7 +72,8 @@ data class PlayableStream(
     /** CineSays can play it in its own player. */
     val playable: Boolean = false,
     /** Why it can't play here (shown to the viewer), when [playable] is false. */
-    val unsupportedReason: String? = null
+    val unsupportedReason: String? = null,
+    val debridTorrent: DebridTorrent? = null
 )
 
 interface StreamProvider {
@@ -85,7 +91,7 @@ data class StreamSearch(
     val failures: Map<String, String> = emptyMap()
 ) {
     val playable get() = streams.filter { it.playable }
-    val unsupported get() = streams.filterNot { it.playable }
+    val unsupported get() = streams.filter { !it.playable && it.debridTorrent == null }
 }
 
 object StreamUrls {

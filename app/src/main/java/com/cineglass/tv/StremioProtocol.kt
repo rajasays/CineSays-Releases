@@ -11,7 +11,7 @@ import com.google.gson.JsonParser
 // name, title/description, subtitles[] and behaviorHints. CineSays treats add-on output as untrusted
 // data: nothing is executed, every field is type-checked, and a stream is only playable when it is an
 // https URL on a host the CineSays add-on list allows for that add-on. BitTorrent results (infoHash /
-// magnet) are recognised and listed as unsupported; they are never played or handed to another service.
+// magnet) are recognised. Curated sources can expose a separate Real-Debrid action.
 
 data class StremioManifest(
     val id: String, val name: String, val version: String,
@@ -62,14 +62,14 @@ object StremioProtocol {
      * Parses a stream response. [allowedHosts] are the hosts the CineSays add-on list permits for this
      * add-on; anything else is listed as unsupported with the reason.
      */
-    fun parseStreams(json: String, addonId: String, addonName: String, allowedHosts: Collection<String>): List<PlayableStream> {
+    fun parseStreams(json: String, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String> = emptySet(), allowTorrentStreams: Boolean = false, allowDebrid: Boolean = true): List<PlayableStream> {
         val arr = runCatching { JsonParser.parseString(json).asJsonObject.arr("streams") }.getOrNull() ?: return emptyList()
-        return arr.take(MAX_STREAMS).mapNotNull { e -> if (e.isJsonObject) parseStream(e.asJsonObject, addonId, addonName, allowedHosts) else null }
+        return arr.take(MAX_STREAMS).mapNotNull { e -> if (e.isJsonObject) runCatching { parseStream(e.asJsonObject, addonId, addonName, allowedHosts, authorizedHashes, allowTorrentStreams, allowDebrid) }.getOrNull() else null }
     }
 
-    private fun parseStream(o: JsonObject, addonId: String, addonName: String, allowedHosts: Collection<String>): PlayableStream? {
+    private fun parseStream(o: JsonObject, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String>, allowTorrentStreams: Boolean, allowDebrid: Boolean): PlayableStream? {
         val name = o.str("name")?.take(80)
-        val title = (o.str("title") ?: o.str("description"))?.take(200)
+        val title = (o.str("title") ?: o.str("description"))?.take(if (allowTorrentStreams) 2000 else 200)
         val label = listOfNotNull(name, title).joinToString(" · ").ifBlank { null }
         val hints = o.obj("behaviorHints")
         val size = hints?.get("videoSize")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong?.takeIf { it > 0 }
@@ -85,17 +85,29 @@ object StremioProtocol {
 
         val url = o.str("url")
         val infoHash = o.str("infoHash")
+        val torrent = if (authorizedHashes.isNotEmpty() || allowTorrentStreams) {
+            val hash = infoHash ?: url?.takeIf { it.startsWith("magnet:?", true) }
+                ?.substringAfter('?')?.split('&')?.firstOrNull { it.startsWith("xt=urn:btih:", true) }
+                ?.substringAfterLast(':')
+            val index = o.get("fileIdx")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                ?.asString?.toIntOrNull()?.takeIf { it >= 0 }
+            hash?.lowercase()?.takeIf { Regex("[0-9a-f]{40}").matches(it) && (allowTorrentStreams || it in authorizedHashes) && (!o.has("fileIdx") || o.get("fileIdx").isJsonNull || index != null) }
+                ?.let { DebridTorrent(it, index, hints?.str("filename")?.take(512), directPlayback = allowTorrentStreams, debridPlayback = allowDebrid) }
+        } else null
+        if (torrent != null && (url == null || url.startsWith("magnet:", true))) {
+            return stream(null, StreamKind.TORRENT, false, null).copy(debridTorrent = torrent)
+        }
         val ytId = o.str("ytId")
         val external = o.str("externalUrl")
         return when {
-            url != null && url.startsWith("magnet:", true) -> stream(null, StreamKind.TORRENT, false, "BitTorrent source: CineSays doesn't play torrents")
+            url != null && url.startsWith("magnet:", true) -> stream(null, StreamKind.TORRENT, false, "BitTorrent source is missing a valid hash or file index, or its hash is not approved by this add-on")
             url != null -> when {
                 !StreamUrls.isHttps(url) -> stream(null, StreamKind.UNKNOWN, false, "Not a secure (https) link")
                 !StreamUrls.allowed(url, allowedHosts) -> stream(null, StreamKind.UNKNOWN, false, "Source isn't on this add-on's approved list")
                 hints?.get("proxyHeaders") != null -> stream(null, StreamKind.UNKNOWN, false, "Needs custom request headers, which CineSays doesn't send")
                 else -> stream(url, StreamUrls.kindOf(url), true, null)
             }
-            infoHash != null -> stream(null, StreamKind.TORRENT, false, "BitTorrent source: CineSays doesn't play torrents")
+            infoHash != null -> stream(null, StreamKind.TORRENT, false, "BitTorrent source is missing a valid hash or file index, or its hash is not approved by this add-on")
             ytId != null -> stream(null, StreamKind.YOUTUBE, false, "YouTube video: open it from the title's trailer instead")
             external != null -> stream(null, StreamKind.EXTERNAL, false, "Opens on another website")
             else -> null

@@ -1,0 +1,12 @@
+{
+  "streams": [
+    {
+      "name": "Big Buck Bunny 720p",
+      "description": "Blender Foundation \u00b7 CC BY 3.0",
+      "infoHash": "0e876ce2a1a504f849ca72a5e2bc07347b3bc957",
+      "behaviorHints": {
+        "filename": "big_buck_bunny_720p_surround.mp4"
+      }
+    }
+  ]
+}

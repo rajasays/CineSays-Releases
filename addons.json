@@ -7,5 +7,31 @@
     "query": "subject:(blender) AND collection:(animationandcartoons OR opensource_movies)",
     "requireLicence": true,
     "defaultOn": true
+  },
+  {
+    "id": "cinesays.big-buck-bunny-test",
+    "name": "Big Buck Bunny test",
+    "description": "Big Buck Bunny (2008), Blender Foundation, CC BY 3.0. Real-Debrid playback test.",
+    "engine": "stremio",
+    "manifestUrl": "https://raw.githubusercontent.com/rajasays/CineSays-Releases/main/addons/big-buck-bunny/manifest.json",
+    "allowedHosts": [
+      "archive.org"
+    ],
+    "defaultOn": false,
+    "realDebrid": true,
+    "authorizedTorrentHashes": [
+      "0e876ce2a1a504f849ca72a5e2bc07347b3bc957"
+    ]
+  },
+  {
+    "id": "cinesays.torrentio",
+    "name": "Torrentio",
+    "description": "Torrent source discovery. Enable only for content you are authorized to access. Downloads use device storage and upload to peers.",
+    "engine": "stremio",
+    "manifestUrl": "https://torrentio.strem.fun/manifest.json",
+    "allowedHosts": [],
+    "defaultOn": false,
+    "realDebrid": false,
+    "torrentStreams": true
   }
 ]

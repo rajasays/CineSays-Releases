@@ -44,20 +44,34 @@ class StremioAddonProvider(private val addon: Addon, private val http: OkHttpCli
     private val base = StremioProtocol.baseOf(addon.manifestUrl.orEmpty())
     @Volatile private var manifest: Pair<Long, StremioManifest?>? = null
 
-    private fun get(url: String): String? {
+    private suspend fun get(url: String): String? = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         val req = Request.Builder().url(url).header("Accept", "application/json").build()
-        http.newCall(req).execute().use { r ->
-            if (!r.isSuccessful) throw java.io.IOException("HTTP ${r.code}")
-            val body = r.body ?: return null
-            if (body.contentLength() > 2_000_000) throw java.io.IOException("Response too large")
-            return body.string()
-        }
+        val call = http.newCall(req)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                continuation.resumeWith(Result.failure(e))
+            }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                val result = runCatching {
+                    response.use { r ->
+                        if (!r.isSuccessful) throw java.io.IOException("HTTP ${r.code}")
+                        val body = r.body ?: return@use null
+                        if (body.contentLength() > 2_000_000) throw java.io.IOException("Response too large")
+                        val source = body.source()
+                        if (source.request(2_000_001L)) throw java.io.IOException("Response too large")
+                        source.readUtf8()
+                    }
+                }
+                continuation.resumeWith(result)
+            }
+        })
     }
 
-    private fun manifest(): StremioManifest? {
+    private suspend fun manifest(): StremioManifest? {
         manifest?.takeIf { System.currentTimeMillis() - it.first < 24 * 3600_000L }?.let { return it.second }
         val m = get(addon.manifestUrl!!)?.let(StremioProtocol::parseManifest)
-        manifest = System.currentTimeMillis() to m
+        if (m != null) manifest = System.currentTimeMillis() to m
         return m
     }
 
@@ -66,7 +80,9 @@ class StremioAddonProvider(private val addon: Addon, private val http: OkHttpCli
         val m = manifest() ?: throw java.io.IOException("Add-on manifest is invalid or has no stream resource")
         if (!m.servesStreams(type, mediaId)) return@withContext emptyList()
         val json = get(StremioProtocol.streamUrl(base, type, mediaId)) ?: return@withContext emptyList()
-        StremioProtocol.parseStreams(json, addon.id, addon.name, addon.allowedHosts.orEmpty())
+        StremioProtocol.parseStreams(json, addon.id, addon.name, addon.allowedHosts.orEmpty(),
+            if (addon.realDebrid) addon.authorizedTorrentHashes.orEmpty().toSet() else emptySet(),
+            allowTorrentStreams = addon.torrentStreams, allowDebrid = addon.realDebrid)
     }
 }
 
@@ -81,13 +97,26 @@ object StreamRepository {
             .callTimeout(14, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
     }
 
-    fun providers(context: Context): List<StreamProvider> =
-        listOf<StreamProvider>(ArchiveStreamProvider(context.applicationContext)) +
-            Addons.enabled(context).filter { it.engine == Addons.STREMIO }.map { StremioAddonProvider(it, http) }
+    private val addonProviders = HashMap<Addon, StremioAddonProvider>()
+
+    fun providers(context: Context): List<StreamProvider> {
+        val enabled = Addons.enabled(context).filter { it.engine == Addons.STREMIO }
+        val addons = synchronized(addonProviders) {
+            addonProviders.keys.retainAll(enabled.toSet())
+            enabled.map { addonProviders.getOrPut(it) { StremioAddonProvider(it, http) } }
+        }
+        return listOf<StreamProvider>(ArchiveStreamProvider(context.applicationContext)) + addons
+    }
+
+    fun clearCache() {
+        synchronized(cache) { cache.clear() }
+        synchronized(addonProviders) { addonProviders.clear() }
+    }
 
     suspend fun search(context: Context, ref: MediaRef, force: Boolean = false): StreamSearch {
         if (!force) synchronized(cache) { cache[ref.key]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
-        Addons.refresh(context)
+        if (force) clearCache()
+        Addons.refresh(context, force = force)
         val results = coroutineScope {
             providers(context).map { p ->
                 async {
@@ -101,7 +130,10 @@ object StreamRepository {
         val failures = results.mapNotNull { (n, r) -> r.exceptionOrNull()?.let { n to friendly(it) } }.toMap()
         failures.forEach { (n, why) -> Log.w(TAG, "source '$n' failed for ${ref.key}: $why") } // no URLs or tokens in logs
         val search = StreamSearch(streams, failures)
-        if (failures.isEmpty()) synchronized(cache) { cache[ref.key] = System.currentTimeMillis() to search }
+        if (failures.isEmpty()) synchronized(cache) {
+            if (cache.size >= 64) cache.entries.minByOrNull { it.value.first }?.let { cache.remove(it.key) }
+            cache[ref.key] = System.currentTimeMillis() to search
+        }
         return search
     }
 

@@ -129,7 +129,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         scope.launch {
             val watched = if (item.kind == "tv") tracker.watchedFor(item.id) else emptySet()
             val shown = state.selected?.let { it.id == item.id && it.kind == item.kind } == true
-            streaming.openWatchNow(item, if (shown) state.imdbId else preselect?.imdbId, if (shown) state.providersByRegion else emptyMap(),
+            streaming.openWatchNow(item, if (shown) state.imdbId ?: preselect?.imdbId else preselect?.imdbId, if (shown) state.providersByRegion else emptyMap(),
                 state.regions, vm.myProviderIds(), watched, preselect)
         }
     }
@@ -137,7 +137,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     fun openWatchNowFor(ref: MediaRef) {
         val item = if (ref.type == MediaType.MOVIE) TitleItem(id = ref.tmdbId, title = ref.title, mediaType = "movie", poster = ref.poster)
             else TitleItem(id = ref.tmdbId, name = ref.title, mediaType = "tv", poster = ref.poster)
-        openWatchNow(item, if (ref.type == MediaType.EPISODE) ref else null)
+        openWatchNow(item, ref)
     }
 
     // Discover filters
@@ -398,7 +398,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                 onSubtitlePref = { lang -> streaming.updatePrefs { if (lang == null) it.copy(subtitleMode = "off") else it.copy(subtitleMode = "on", subtitleLanguage = lang) } })
         }
     }
-    if (streamState.preparing) Dialog(onDismissRequest = {}) {
+    if (streamState.preparing) Dialog(onDismissRequest = streaming::cancelSourcePreparation) {
         Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
@@ -446,7 +446,7 @@ private fun SettingsScreen(
 @Composable
 private fun AddonsSection(addons: List<Pair<Addon, Boolean>>, onToggle: (String) -> Unit) {
     Text("Add-ons", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-    Text("Catalogues for the Free tab. CineSays only ships legal sources: public-domain and openly licensed films from the Internet Archive, and broadcasters' official live streams. New add-ons arrive with CineSays updates.",
+    Text("Collections for the Free tab and sources for Watch Now. Torrent add-ons are optional; enable them only for content you are authorized to access.",
         color = Cs.textSoft, fontSize = 14.sp)
     addons.forEach { (a, on) ->
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {

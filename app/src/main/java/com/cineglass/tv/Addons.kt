@@ -6,16 +6,9 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// ───────────────────────────── Add-ons (legal sources only) ─────────────────────────────
-// A Stremio-style catalogue system with one hard rule: CineSays only plays from engines it ships.
-//   • "archive": films from the Internet Archive (archive.org), played with the in-app player.
-//   • "youtube_live": broadcasters' official 24/7 live streams, played with YouTube's own embed.
-// An add-on is just data that points one of those engines at a catalogue (an archive search, or a list
-// of channels). New add-ons arrive from CineSays' own registry file on GitHub, never from a user-typed
-// URL, and the app re-checks every one: an unknown engine is dropped, an archive search outside the
-// curated public-domain collections is limited to items marked public domain or Creative Commons, and a
-// channel must be a well-formed YouTube channel ID. So a registry entry can add or tune catalogues, but
-// can never point the player at anything other than those sources.
+// Add-on registry: existing Archive/YouTube engines plus opt-in Stremio stream discovery.
+// The registry grants capabilities, not copyright permission. HTTPS stream hosts remain restricted;
+// torrent results require a listed hash or explicit torrentStreams capability and user opt-in.
 
 data class Addon(
     val id: String = "",
@@ -33,7 +26,13 @@ data class Addon(
     /** stremio: the add-on's https manifest URL. */
     val manifestUrl: String? = null,
     /** stremio: the only hosts its streams (and subtitles) may come from. */
-    val allowedHosts: List<String>? = null
+    val allowedHosts: List<String>? = null,
+    /** Opt-in for a curated add-on whose torrent results are authorized for playback. */
+    val realDebrid: Boolean = false,
+    val authorizedTorrentHashes: List<String>? = null,
+    /** Explicit registry opt-in to discover torrent results without a per-title hash list.
+     * This is a capability setting, not a statement about a title's licence. */
+    val torrentStreams: Boolean = false
 )
 
 /** One add-on's films, as shown in a Free tab row. */
@@ -55,6 +54,10 @@ object Addons {
     private val CURATED = setOf("feature_films", "silent_films", "film_noir", "scifi_horror", "classic_cartoons", "prelinger")
 
     val BUILTIN: List<Addon> = listOf(
+        Addon("cinesays.torrentio", "Torrentio",
+            "Torrent source discovery. Enable only for content you are authorized to access. Downloads use device storage and upload to peers.",
+            STREMIO, defaultOn = false, manifestUrl = "https://torrentio.strem.fun/manifest.json",
+            torrentStreams = true),
         Addon("live.news", "Live news channels", "Official 24/7 live streams that broadcasters publish on YouTube.",
             YOUTUBE_LIVE, channels = LIVE_CHANNELS),
         Addon("ia.feature_films", "Classic feature films", "The Internet Archive's public-domain feature films.",
@@ -104,28 +107,60 @@ object Addons {
                 val m = a.manifestUrl?.trim()?.takeIf { it.endsWith("/manifest.json") && StreamUrls.isHttps(it) } ?: return null
                 // Bare domains only (no wildcards, IPs or paths); without any, nothing from it could play.
                 val hosts = a.allowedHosts.orEmpty().map { it.trim().lowercase() }.filter { HOST.matches(it) }
-                if (hosts.isEmpty()) null else a.copy(manifestUrl = m, allowedHosts = hosts, query = null, channels = null)
+                if (hosts.isEmpty() && !a.torrentStreams) return null
+                val hashes = a.authorizedTorrentHashes.orEmpty().map { it.trim().lowercase() }
+                    .filter { it.matches(Regex("[0-9a-f]{40}")) }.distinct()
+                if (a.realDebrid && hashes.isEmpty() && !a.torrentStreams) return null
+                a.copy(manifestUrl = m, allowedHosts = hosts, query = null, channels = null,
+                    defaultOn = a.defaultOn && !a.realDebrid && !a.torrentStreams, authorizedTorrentHashes = hashes)
             }
             else -> null
         }
     }
 
+    fun permitsTorrent(addon: Addon, hash: String): Boolean =
+        addon.engine == STREMIO && Regex("[0-9a-f]{40}").matches(hash) &&
+            (addon.torrentStreams || (addon.realDebrid && hash in addon.authorizedTorrentHashes.orEmpty()))
+
+    @Volatile private var lastRefreshMs = 0L
+
     /** Loads the cached registry, then refreshes it from GitHub. Failures keep what we had. */
-    suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
+    suspend fun refresh(context: Context, force: Boolean = false): Unit = withContext(Dispatchers.IO) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && lastRefreshMs != 0L && now - lastRefreshMs < 60_000L) return@withContext
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         fun parse(json: String?): List<Addon> = runCatching {
             gson.fromJson<List<Addon>>(json, object : TypeToken<List<Addon>>() {}.type).orEmpty().mapNotNull(::sanitize)
         }.getOrDefault(emptyList())
         registry = parse(prefs.getString("registry", null))
         runCatching {
-            val c = java.net.URL(REGISTRY_URL).openConnection() as java.net.HttpURLConnection
-            c.connectTimeout = 8000; c.readTimeout = 8000
-            if (c.responseCode == 200) {
+            val url = if (force) "$REGISTRY_URL?refresh=${System.currentTimeMillis()}" else REGISTRY_URL
+            val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            try {
+                c.connectTimeout = 8000
+                c.readTimeout = 8000
+                if (force) {
+                    c.useCaches = false
+                    c.setRequestProperty("Cache-Control", "no-cache")
+                }
+                check(c.responseCode == 200) { "HTTP ${c.responseCode}" }
                 val body = c.inputStream.bufferedReader().use { it.readText() }
                 val list = parse(body)
-                if (list.isNotEmpty()) { registry = list; prefs.edit().putString("registry", body).apply() }
+                check(list.isNotEmpty()) { "No valid add-on entries" }
+                registry = list
+                prefs.edit().putString("registry", body).apply()
+                if (force) {
+                    val test = list.firstOrNull { it.id == "cinesays.big-buck-bunny-test" }
+                    android.util.Log.i("CineSaysTorrent", "Refreshed registry. Big Buck Bunny approved hashes: ${test?.authorizedTorrentHashes.orEmpty()}")
+                }
+            } finally {
+                c.disconnect()
             }
+        }.onFailure {
+            if (force) android.util.Log.w("CineSaysTorrent", "Registry refresh failed; using saved registry.", it)
         }
+        lastRefreshMs = android.os.SystemClock.elapsedRealtime()
+        Unit
     }
 
     /** User's on/off choices; add-ons they never touched follow [Addon.defaultOn]. */

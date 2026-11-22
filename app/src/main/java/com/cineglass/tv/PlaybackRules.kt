@@ -5,6 +5,7 @@ package com.cineglass.tv
 /** What a Watch Now press can do, in the order the router offers them. */
 sealed class WatchAction {
     data class PlayNative(val stream: PlayableStream) : WatchAction()
+    data class PlayTorrent(val stream: PlayableStream) : WatchAction()
     /** An official service the title is on (provider id + name), opened in its own app. */
     data class OpenService(val providerId: Int, val providerName: String, val region: String) : WatchAction()
     data class OpenStremio(val deepLink: String) : WatchAction()
@@ -27,7 +28,8 @@ object PlaybackRouter {
         val svc = services.distinctBy { it.first }.sortedBy { if (it.first in myServiceIds) 0 else 1 }
             .map { (id, name, region) -> WatchAction.OpenService(id, name, region) }
         val stremio = if (stremioInstalled) stremioLink(ref)?.let { listOf(WatchAction.OpenStremio(it)) }.orEmpty() else emptyList()
-        val all = native + svc + stremio
+        val torrents = search.streams.filter { supportsDirectTorrent(it.debridTorrent) }.map { WatchAction.PlayTorrent(it) }
+        val all = native + svc + stremio + torrents
         if (all.isNotEmpty()) return all
         val why = when {
             search.unsupported.isNotEmpty() -> "Sources were found, but none can play in CineSays."

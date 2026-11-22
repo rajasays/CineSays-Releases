@@ -53,7 +53,8 @@ data class NativePlayback(
     /** The next episode, for series. */
     val next: MediaRef? = null,
     /** The title, so "Find other sources" can reopen Watch Now. */
-    val item: TitleItem? = null
+    val item: TitleItem? = null,
+    val torrent: TorrentPlayback? = null
 )
 
 data class ResumePrompt(val playback: NativePlayback, val positionMs: Long)
@@ -76,6 +77,8 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
     private val tmdbKey get() = BuildConfig.TMDB_API_KEY
     private var searchJob: Job? = null
     private var episodesJob: Job? = null
+    private var sourcePreparationJob: Job? = null
+    private var activeTorrent: TorrentPlayback? = null
     /** Set by a Watch Now press: the first search result may act on the viewer's saved destination. */
     private var pendingAuto = false
 
@@ -105,6 +108,8 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(prefs = v) }
     }
 
+    fun cancelSourcePreparation() { sourcePreparationJob?.cancel() }
+
     fun clearMessage() { _state.update { it.copy(message = null) } }
 
     // ── Watch Now ──
@@ -128,7 +133,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         if (!isTv) search(base) else loadSeasons(item, preselect)
     }
 
-    fun closeWatchNow() { searchJob?.cancel(); episodesJob?.cancel(); pendingAuto = false; _state.update { it.copy(watchNow = null) } }
+    fun closeWatchNow() { sourcePreparationJob?.cancel(); searchJob?.cancel(); episodesJob?.cancel(); pendingAuto = false; _state.update { it.copy(watchNow = null) } }
 
     private fun loadSeasons(item: TitleItem, preselect: MediaRef?) {
         episodesJob?.cancel()
@@ -196,6 +201,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         val ref = w.selected ?: return
         when (action) {
             is WatchAction.PlayNative -> startNative(action.stream, ref, w.item)
+            is WatchAction.PlayTorrent -> playTorrent(action.stream, ref, w.item)
             is WatchAction.OpenService -> WatchNow.watch(context, Provider(action.providerId, action.providerName, null), w.item, listOf(action.region) + w.regions)
             is WatchAction.OpenStremio -> try {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(action.deepLink)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -213,13 +219,57 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // ── Native playback ──
 
-    private fun startNative(stream: PlayableStream, ref: MediaRef, item: TitleItem?) {
+    private fun playTorrent(stream: PlayableStream, ref: MediaRef, item: TitleItem) {
+        val torrent = stream.debridTorrent ?: return
+        if (!supportsDirectTorrent(torrent) || sourcePreparationJob?.isActive == true || activeTorrent != null) return
+        if (Addons.enabled(app).none {
+                it.id == stream.providerId && Addons.permitsTorrent(it, torrent.hash)
+            }) return
+        sourcePreparationJob = viewModelScope.launch {
+            _state.update { it.copy(preparing = true) }
+            val pending = java.util.concurrent.atomic.AtomicReference<TorrentPlayback>()
+            try {
+                withContext(Dispatchers.IO) { pending.set(TorrentPlayback.prepare(app, torrent)) }
+                if (_state.value.watchNow?.selected?.key != ref.key) return@launch
+                val source = requireNotNull(pending.getAndSet(null))
+                activeTorrent = source
+                startNative(stream.copy(url = source.uri, kind = StreamKind.PROGRESSIVE,
+                    sourceName = "${stream.sourceName} · Torrent"), ref, item, saveUrl = false, torrent = source)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: TorrentPreparationException) {
+                android.util.Log.w("CineSaysTorrent", e.message.orEmpty())
+                _state.update { it.copy(message = e.message) }
+            } catch (e: LinkageError) {
+                android.util.Log.w("CineSaysTorrent", "Native torrent engine failed to load", e)
+                _state.update { it.copy(message = "The torrent engine is unavailable on this device.") }
+            } catch (e: Exception) {
+                android.util.Log.w("CineSaysTorrent", "Torrent preparation failed", e)
+                _state.update { it.copy(message = "Torrent setup failed. See CineSaysTorrent in Android Studio Logcat.") }
+            } finally {
+                pending.getAndSet(null)?.close()
+                _state.update { it.copy(preparing = false) }
+            }
+        }
+    }
+
+    private fun stopTorrent() {
+        activeTorrent?.close()
+        activeTorrent = null
+    }
+
+    override fun onCleared() {
+        stopTorrent()
+        super.onCleared()
+    }
+
+    private fun startNative(stream: PlayableStream, ref: MediaRef, item: TitleItem?, saveUrl: Boolean = true, torrent: TorrentPlayback? = null) {
         val url = stream.url ?: return
         val record = PlaybackRecord(key = ref.key, type = if (ref.type == MediaType.MOVIE) "movie" else "episode", tmdbId = ref.tmdbId,
             season = ref.season, episode = ref.episode, title = ref.title, episodeName = ref.episodeName, poster = ref.poster, imdbId = ref.imdbId,
-            streamUrl = url, streamKind = stream.kind.name, sourceName = stream.sourceName, licence = stream.licence)
+            streamUrl = url.takeIf { saveUrl }, streamKind = stream.kind.name, sourceName = stream.sourceName, licence = stream.licence)
         begin(NativePlayback(ref.display + (ref.episodeName?.let { " · $it" } ?: ""), url, stream.kind, stream.subtitles, record, stream.licence,
-            stream.sourceName, next = ref.next(), item = item))
+            stream.sourceName, next = ref.next(), item = item, torrent = torrent))
     }
 
     /** A Free tab film, or "Watch free in CineSays" on a movie's page ([ref] = that movie, so progress follows the movie). */
@@ -275,9 +325,16 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         val r = _state.value.resume ?: return
         _state.update { it.copy(resume = null, playing = r.playback.copy(startMs = if (fromSaved) r.positionMs else 0)) }
     }
-    fun dismissResume() { _state.update { it.copy(resume = null) } }
+    fun dismissResume() {
+        if (_state.value.resume?.playback?.torrent != null) stopTorrent()
+        _state.update { it.copy(resume = null) }
+    }
 
-    fun closePlayer() { _state.update { it.copy(playing = null) }; refreshContinueWatching() }
+    fun closePlayer() {
+        stopTorrent()
+        _state.update { it.copy(playing = null) }
+        refreshContinueWatching()
+    }
 
     /** Called by the player every few seconds, on pause/stop/exit, and at the end. */
     fun saveProgress(p: NativePlayback, positionMs: Long, durationMs: Long) {
@@ -297,6 +354,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
     fun playNext(onOpenWatchNow: (MediaRef) -> Unit) {
         val p = _state.value.playing ?: return
         val next = p.next ?: return
+        stopTorrent()
         _state.update { it.copy(playing = null, preparing = true) }
         viewModelScope.launch {
             val result = StreamRepository.search(app, next)
