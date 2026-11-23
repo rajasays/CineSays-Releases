@@ -6,6 +6,8 @@ import androidx.media3.common.C
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DataSource
 import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetAddress
@@ -51,6 +53,7 @@ internal class LocalTorrentHttp private constructor(
 
     private fun serve(client: Socket) {
         client.use { socket ->
+            val requestStarted = SystemClock.elapsedRealtime()
             socket.soTimeout = 30_000
             try {
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
@@ -73,6 +76,7 @@ internal class LocalTorrentHttp private constructor(
                     out.flush(); return
                 }
                 val (from, to) = bounds
+                val requestKind = if (range == null) "full" else "range"
                 val count = to - from + 1
                 val status = if (range == null) "200 OK" else "206 Partial Content"
                 val extra = if (range == null) "" else "Content-Range: bytes $from-$to/$size\r\n"
@@ -80,6 +84,7 @@ internal class LocalTorrentHttp private constructor(
                     "Content-Length: $count\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
                 val source = if (parts[0] == "GET") factory.createDataSource() else null
                 var headersSent = false
+                var writtenBytes = 0L
                 try {
                     // Do not announce a successful HTTP response until its first
                     // verified torrent piece is readable. On peer timeout, return 503
@@ -88,6 +93,8 @@ internal class LocalTorrentHttp private constructor(
                     val out = socket.getOutputStream()
                     out.write(header.toByteArray(Charsets.US_ASCII))
                     headersSent = true
+                    val firstPieceMs = SystemClock.elapsedRealtime() - requestStarted
+                    if (firstPieceMs >= 1_000) Log.i("CineSaysTorrent", "http_first_piece method=${parts[0]} kind=$requestKind waitMs=$firstPieceMs")
                     if (source != null) {
                         var left = count
                         val bytes = ByteArray(64 * 1024)
@@ -96,10 +103,14 @@ internal class LocalTorrentHttp private constructor(
                             if (read == C.RESULT_END_OF_INPUT || read <= 0) break
                             out.write(bytes, 0, read)
                             left -= read
+                            writtenBytes += read
                         }
                     }
                     out.flush()
-                } catch (_: Exception) {
+                    val elapsedMs = SystemClock.elapsedRealtime() - requestStarted
+                    if (elapsedMs >= 3_000) Log.i("CineSaysTorrent", "http_transfer method=${parts[0]} kind=$requestKind bytes=$writtenBytes elapsedMs=$elapsedMs")
+                } catch (e: Exception) {
+                    Log.w("CineSaysTorrent", "http_failure method=${parts[0]} kind=$requestKind headersSent=$headersSent bytes=$writtenBytes elapsedMs=${SystemClock.elapsedRealtime() - requestStarted} cause=${e.javaClass.simpleName}")
                     if (!headersSent && !closed.get()) runCatching {
                         reply(socket, 503, "Service Unavailable")
                     }
