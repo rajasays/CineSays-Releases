@@ -108,10 +108,10 @@ object Addons {
                 val m = a.manifestUrl?.trim()?.takeIf { it.endsWith("/manifest.json") && StreamUrls.isHttps(it) } ?: return null
                 // Bare domains only (no wildcards, IPs or paths); without any, nothing from it could play.
                 val hosts = a.allowedHosts.orEmpty().map { it.trim().lowercase() }.filter { HOST.matches(it) }
-                // A hash-curated add-on can offer approved torrents without any HTTP stream hosts.
-                if (hosts.isEmpty() && !a.torrentStreams && a.authorizedTorrentHashes.orEmpty().isEmpty()) return null
                 val hashes = a.authorizedTorrentHashes.orEmpty().map { it.trim().lowercase() }
                     .filter { it.matches(Regex("[0-9a-f]{40}")) }.distinct()
+                // A hash-curated add-on can offer approved torrents without HTTP stream hosts.
+                if (hosts.isEmpty() && !a.torrentStreams && hashes.isEmpty()) return null
                 a.copy(manifestUrl = m, allowedHosts = hosts, query = null, channels = null,
                     defaultOn = a.defaultOn && hashes.isEmpty() && !a.torrentStreams, authorizedTorrentHashes = hashes)
             }
