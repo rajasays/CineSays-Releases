@@ -307,7 +307,10 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
                 if (_state.value.watchNow?.selected?.key != ref.key) return@launch
                 val source = requireNotNull(pending.getAndSet(null))
                 activeTorrent = source
-                startNative(stream.copy(url = source.uri, kind = StreamKind.PROGRESSIVE,
+                // Prefer the embedded loopback HTTP range bridge. Keep the existing
+                // direct piece-aware data source if binding a local port fails.
+                val playbackUrl = runCatching { source.loopbackUrl() }.getOrElse { source.uri }
+                startNative(stream.copy(url = playbackUrl, kind = StreamKind.PROGRESSIVE,
                     sourceName = "${stream.sourceName} · Torrent"), ref, item, saveUrl = false, torrent = source)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e

@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.MediaCodecList
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import android.view.Display
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
@@ -122,9 +124,26 @@ fun NativePlayerScreen(
     }
 
     DisposableEffect(player) {
+        val torrentDiagnostics = playback.torrent != null
+        var bufferingStartedAt = 0L
         val listener = object : Player.Listener {
-            override fun onPlayerError(e: PlaybackException) { error = describePlaybackError(e); report() }
-            override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED) { ended = true; report() } }
+            override fun onPlayerError(e: PlaybackException) {
+                if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
+                error = describePlaybackError(e); report()
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (torrentDiagnostics) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (state == Player.STATE_BUFFERING) {
+                        bufferingStartedAt = now
+                        Log.i("CineSaysTorrent", "player_buffering positionMs=${player.currentPosition}")
+                    } else if (bufferingStartedAt != 0L) {
+                        Log.i("CineSaysTorrent", "player_buffering_end durationMs=${now - bufferingStartedAt} nextState=$state")
+                        bufferingStartedAt = 0L
+                    }
+                }
+                if (state == Player.STATE_ENDED) { ended = true; report() }
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) report() } // pause / stop
         }
         player.addListener(listener)
@@ -138,15 +157,26 @@ fun NativePlayerScreen(
         lifecycle.addObserver(obs); onDispose { lifecycle.removeObserver(obs) }
     }
     LaunchedEffect(seekHint) { if (seekHint != null) { delay(900); seekHint = null } }
-    // Still loading after 15 s with nothing played: say the source is slow instead of spinning silently.
+    // Torrent sources can stall after a seek as well as at startup. The warning
+    // is advisory: never auto-switch sources, stop the torrent or discard progress.
     var slowStart by remember(playback.url) { mutableStateOf(false) }
+    var torrentHealth by remember(playback.url) { mutableStateOf<String?>(null) }
     LaunchedEffect(player) {
         var waited = 0
         while (true) {
             delay(1000)
-            val stuck = player.playbackState == Player.STATE_BUFFERING && player.currentPosition < 1000
+            val buffering = player.playbackState == Player.STATE_BUFFERING
+            val stuck = buffering && (playback.torrent != null || player.currentPosition < 1000)
             waited = if (stuck) waited + 1 else 0
             slowStart = waited >= 15
+            if (playback.torrent != null) {
+                if (!slowStart) torrentHealth = null
+                else if (waited == 15 || waited % 5 == 0) {
+                    torrentHealth = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        playback.torrent.sourceHealth(waited)
+                    }
+                }
+            }
         }
     }
 
@@ -227,8 +257,16 @@ fun NativePlayerScreen(
                 .background(Cs.panel.copy(alpha = .92f), RoundedCornerShape(16.dp)).border(1.dp, Cs.line, RoundedCornerShape(16.dp)).padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Still loading…", color = Cs.text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                Text("${StreamUrls.host(playback.url) ?: "The source"} is responding slowly on your connection. You can keep waiting" +
-                    (if (onFindSources != null) ", or pick another source (Up, then Close, or Back)." else ", or press Back to leave."), color = Cs.textSoft, fontSize = 14.sp)
+                Text(
+                    if (playback.torrent != null) torrentHealth ?: "Checking the selected torrent's peers and video pieces…"
+                    else "${StreamUrls.host(playback.url) ?: "The source"} is responding slowly on your connection. You can keep waiting" +
+                        (if (onFindSources != null) ", or pick another source (Up, then Close, or Back)." else ", or press Back to leave."),
+                    color = Cs.textSoft, fontSize = 14.sp
+                )
+                if (playback.torrent != null && onFindSources != null)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CsButton("Other sources", primary = true) { report(); onFindSources() }
+                    }
             }
 
             error?.let { msg ->
@@ -406,12 +444,12 @@ private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.(
 @OptIn(UnstableApi::class)
 private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPrefs): ExoPlayer {
     val http = DefaultHttpDataSource.Factory().setUserAgent("CineSays/${BuildConfig.VERSION_NAME} (Android TV)")
-        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(15_000)
+        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) 40_000 else 15_000)
     val load = if (prefs.buffering == "large") DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 120_000, 2_500, 6_000).build()
         else DefaultLoadControl()
     val player = ExoPlayer.Builder(context)
         .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
-        .setMediaSourceFactory(DefaultMediaSourceFactory(p.torrent?.dataSourceFactory() ?: DefaultDataSource.Factory(context, http)))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(if (p.torrent != null && !p.url.startsWith("http://127.0.0.1:")) p.torrent.dataSourceFactory() else DefaultDataSource.Factory(context, http)))
         .setLoadControl(load)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         .setSeekBackIncrementMs(10_000).setSeekForwardIncrementMs(10_000)

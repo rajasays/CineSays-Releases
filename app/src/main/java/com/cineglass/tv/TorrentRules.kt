@@ -35,6 +35,46 @@ internal object TorrentRules {
         if (first < 0 || last < first) emptyList()
         else (first..minOf(first.toLong() + 3, last.toLong()).toInt()).toList()
 
+    /**
+     * Keep roughly 8 MiB of verified pieces scheduled ahead of the current read.
+     * Torrent piece sizes vary substantially between sources; a fixed four-piece
+     * window can represent less than one second of high-bitrate video.
+     * Bound the window to 4..16 pieces so a slow peer swarm is not overwhelmed.
+     */
+    fun adaptiveReadWindow(first: Int, last: Int, pieceLength: Int): List<Int> {
+        if (first < 0 || last < first || pieceLength <= 0) return emptyList()
+        val targetBytes = 8L * 1024 * 1024
+        val desired = ((targetBytes + pieceLength - 1) / pieceLength).coerceIn(4L, 16L)
+        return (first.toLong()..minOf(first.toLong() + desired - 1, last.toLong()))
+            .map { it.toInt() }
+    }
+
+    /**
+     * Container parsers may probe the end of a large file for an MP4 index while
+     * playback consumes its beginning. Keep the playback window anchored when
+     * that independent tail probe occurs; the tail piece gets its own deadline.
+     */
+    fun isTailProbe(requestedPiece: Int, firstPiece: Int, lastPiece: Int, playbackPiece: Int): Boolean =
+        lastPiece - firstPiece > 16 &&
+            playbackPiece in firstPiece..(firstPiece.toLong() + 8).coerceAtMost(lastPiece.toLong()).toInt() &&
+            requestedPiece >= lastPiece - 2
+
+    /** Metadata-only reads in the final three pieces must never own video scheduling. */
+    fun isMetadataTailRange(piece: Int, firstPiece: Int, lastPiece: Int): Boolean =
+        piece in firstPiece..lastPiece && lastPiece.toLong() - firstPiece > 16L &&
+            piece.toLong() >= lastPiece.toLong() - 2L
+
+    /** Different file region, not a nearby read or a container metadata-tail probe. */
+    fun isSeekJump(piece: Int, playbackPiece: Int, firstPiece: Int, lastPiece: Int): Boolean =
+        playbackPiece in firstPiece..lastPiece &&
+            piece in firstPiece..lastPiece &&
+            !isMetadataTailRange(piece, firstPiece, lastPiece) &&
+            kotlin.math.abs(piece.toLong() - playbackPiece.toLong()) >= 16L
+
+    /** Only ask for an extra startup piece when its time budget is bounded. */
+    fun startupWarmupPieces(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList() else listOf(first, minOf(first.toLong() + 1, last.toLong()).toInt()).distinct()
+
     fun startupPieces(first: Int, last: Int): List<Int> =
         if (first < 0 || last < first) emptyList()
         else (readWindow(first, last) + listOf(maxOf(first, last - 1), last)).distinct()
@@ -43,6 +83,86 @@ internal object TorrentRules {
         // Leave room for metadata, boundary pieces, and normal app operation. Avoid Long overflow.
         val reserve = 128L * 1024 * 1024 + 2L * pieceLength.coerceAtLeast(0)
         return size > 0 && pieceLength > 0 && free > reserve && size <= free - reserve
+    }
+}
+
+
+/**
+ * An incomplete requested piece can take longer than 25 seconds even when
+ * blocks keep arriving. Extend only on verified block progress. Never extend
+ * if no blocks have arrived within the last 10 seconds or beyond 60 seconds.
+ * Inputs are monotonic elapsed realtime milliseconds.
+ */
+internal class TorrentPieceWaitBudget(private val startedAtMs: Long) {
+    private var bestFinishedBlocks = 0
+    private var lastProgressAtMs = startedAtMs
+
+    fun observe(nowMs: Long, finishedBlocks: Int) {
+        if (finishedBlocks > bestFinishedBlocks) {
+            bestFinishedBlocks = finishedBlocks
+            lastProgressAtMs = nowMs
+        }
+    }
+
+    fun expired(nowMs: Long): Boolean {
+        val elapsed = nowMs - startedAtMs
+        if (elapsed < 25_000) return false
+        return elapsed >= 60_000 || bestFinishedBlocks == 0 ||
+            nowMs - lastProgressAtMs >= 10_000
+    }
+
+    fun extended(nowMs: Long): Boolean = nowMs - startedAtMs >= 25_000 && !expired(nowMs)
+}
+
+/**
+ * Tracks concurrent HTTP range readers without tying the priority window to the
+ * most recent request. The oldest active reader owns forward playback scheduling;
+ * when it closes, ownership transfers to the next active reader (including seeks).
+ * Callers synchronize access to this class with their torrent-session lock.
+ */
+internal class TorrentPriorityOwners {
+    private val readers = LinkedHashMap<Int, Boolean>()
+    private val superseded = HashSet<Int>()
+    var primary: Int? = null
+        private set
+
+    fun enter(readerId: Int, eligible: Boolean = true) {
+        if (readers.putIfAbsent(readerId, eligible) == null && primary == null && eligible) primary = readerId
+    }
+
+    /** True when the playback scheduling owner changed. */
+    fun leave(readerId: Int): Boolean {
+        if (readers.remove(readerId) == null) return false
+        superseded.remove(readerId)
+        if (primary != readerId) return false
+        primary = readers.entries.firstOrNull { it.value && it.key !in superseded }?.key
+        return true
+    }
+
+    /** Transfer to a new far-seek reader once. Old readers cannot reclaim it. */
+    fun promote(readerId: Int): Boolean {
+        if (readers[readerId] != true || readerId in superseded || primary == readerId) return false
+        primary?.let { superseded.add(it) }
+        primary = readerId
+        return true
+    }
+
+    fun canPromote(readerId: Int): Boolean = readers[readerId] == true && readerId !in superseded
+    fun isPrimary(readerId: Int): Boolean = primary == readerId
+}
+
+/** Advisory only: source-health messages never interrupt playback or block retries. */
+internal object TorrentHealthRules {
+    fun message(peers: Int, advertisedPeers: Int?, readyAhead: Int, bufferedSeconds: Int): String {
+        return when {
+            bufferedSeconds < 15 -> "Connecting to torrent peers…"
+            readyAhead > 0 -> "Video pieces are arriving. Playback may resume shortly."
+            peers <= 0 -> "No torrent peers are connected. This source may be unavailable."
+            advertisedPeers == 0 -> "Connected peers aren't advertising the next video piece. Try another source."
+            advertisedPeers != null && advertisedPeers in 1..2 ->
+                "Only a few peers report having the required video piece. Playback may remain slow."
+            else -> "The required video piece is downloading too slowly. Another source may play better."
+        }
     }
 }
 
