@@ -105,6 +105,21 @@ internal class TorrentPriorityOwners {
     fun isPrimary(readerId: Int): Boolean = primary == readerId
 }
 
+/** Advisory only: source-health messages never interrupt playback or block retries. */
+internal object TorrentHealthRules {
+    fun message(peers: Int, advertisedPeers: Int?, readyAhead: Int, bufferedSeconds: Int): String {
+        return when {
+            bufferedSeconds < 15 -> "Connecting to torrent peers…"
+            readyAhead > 0 -> "Video pieces are arriving. Playback may resume shortly."
+            peers <= 0 -> "No torrent peers are connected. This source may be unavailable."
+            advertisedPeers == 0 -> "Connected peers aren't advertising the next video piece. Try another source."
+            advertisedPeers != null && advertisedPeers in 1..2 ->
+                "Only a few peers report having the required video piece. Playback may remain slow."
+            else -> "The required video piece is downloading too slowly. Another source may play better."
+        }
+    }
+}
+
 internal fun supportsDirectTorrent(torrent: DebridTorrent?): Boolean {
     if (torrent == null || !Regex("[0-9a-f]{40}").matches(torrent.hash)) return false
     if (torrent.directPlayback) return true
