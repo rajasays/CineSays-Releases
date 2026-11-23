@@ -85,3 +85,15 @@ adb logcat -c
 # Reproduce playback and seeking
 adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrentio-scheduler-test.log
 ```
+
+## Targeted metadata owner / stalled piece correction
+
+The scheduler test on 2026-11-23 showed initial piece 0 in 3.5 s but two buffering interruptions of 49 s and 32 s. Libtorrent piece 118 and piece 209 each timed out twice at 25 s despite initially high aggregate peer throughput. A tail metadata reader (piece 1024) inherited ownership immediately after a playback reader closed.
+
+- Final-three-piece metadata-only HTTP range readers are excluded from playback priority ownership. They can still fetch their requested piece as auxiliary readers. Next genuine video range reader takes ownership when the original playback reader closes; seek support is retained.
+- A missing torrent piece gets its deadline refreshed at most once every 5 s of continuous waiting without resetting the playback window. This is a best-effort response to starvation, not a guarantee if the swarm lacks the data.
+- Added `metadata_reader` and `piece_reprioritized` to the `CineSaysTorrent` log vocabulary.
+- Added pure JVM tests covering tail-range classification, priority handoff, and metadata-only sessions.
+- No UI, provider registry, remote endpoints, source authorization rules, or timeout changes.
+
+The new code has **not yet been built or tested**. Keep the PR in draft pending compile, unit tests, WebTorrent playback and seek regression, and side-by-side Torrentio test. Capture `adb logcat -d -v time -s CineSaysTorrent:V` after testing. If repeated piece timeouts continue, compare another authorized torrent with a different swarm before modifying the scheduler again.
