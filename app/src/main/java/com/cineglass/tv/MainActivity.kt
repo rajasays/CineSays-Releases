@@ -458,6 +458,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     streamState.playing?.let { p ->
         Dialog(onDismissRequest = streaming::closePlayer, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
             NativePlayerScreen(p, streamState.prefs, onProgress = { pos, dur -> streaming.saveProgress(p, pos, dur) }, onClose = streaming::closePlayer,
+                onSourcePlayed = { streaming.rememberPlayedSource(p) },
                 onNext = p.next?.let { { streaming.playNext { ref -> openWatchNowFor(ref) } } },
                 onFindSources = p.record.ref()?.let { ref -> { streaming.closePlayer(); if (streamState.watchNow == null) openWatchNowFor(ref) } },
                 onSubtitlePref = { lang -> streaming.updatePrefs { if (lang == null) it.copy(subtitleMode = "off") else it.copy(subtitleMode = "on", subtitleLanguage = lang) } })

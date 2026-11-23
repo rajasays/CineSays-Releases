@@ -108,7 +108,8 @@ fun describePlaybackError(e: PlaybackException): String {
 fun NativePlayerScreen(
     playback: NativePlayback, prefs: PlaybackPrefs,
     onProgress: (Long, Long) -> Unit, onClose: () -> Unit,
-    onNext: (() -> Unit)?, onFindSources: (() -> Unit)?, onSubtitlePref: (String?) -> Unit
+    onNext: (() -> Unit)?, onFindSources: (() -> Unit)?, onSubtitlePref: (String?) -> Unit,
+    onSourcePlayed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val player = remember(playback.url) { buildPlayer(context, playback, prefs) }
@@ -120,7 +121,10 @@ fun NativePlayerScreen(
     var picker by remember { mutableStateOf<Int?>(null) } // C.TRACK_TYPE_* or SPEED
     var seekHint by remember { mutableStateOf<String?>(null) }
 
+    var sourceReported by remember(player) { mutableStateOf(false) }
     fun report() {
+        // A failed attempt can expose the requested resume position before playback starts.
+        if (playback.sourceKey != null && !sourceReported) return
         val d = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         if (d > 0 || player.currentPosition > 0) onProgress(player.currentPosition, d)
     }
@@ -167,7 +171,12 @@ fun NativePlayerScreen(
                 }
                 if (state == Player.STATE_ENDED) { ended = true; report() }
             }
-            override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) report() } // pause / stop
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying && !sourceReported) {
+                    sourceReported = true
+                    onSourcePlayed()
+                } else if (!isPlaying) report()
+            }
         }
         loading = player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_IDLE
         player.addListener(listener)
@@ -864,7 +873,7 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
         val native = w.options.filterIsInstance<WatchAction.PlayNative>()
         if (native.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Play in CineSays", native.size.takeIf { it > 1 })
-            native.forEachIndexed { i, a -> FeaturedSourceCard(a.stream, featured = i == 0, compact = layout == WatchLayout.PHONE, modifier = focusMod()) { onAction(a) } }
+            native.forEachIndexed { i, a -> FeaturedSourceCard(a.stream, featured = i == 0, compact = layout == WatchLayout.PHONE, modifier = focusMod(), lastPlayed = w.lastPlayedSource?.let { it == a.stream.historyKey() } == true) { onAction(a) } }
         }
 
         val services = w.options.filterIsInstance<WatchAction.OpenService>()
@@ -889,7 +898,7 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
         val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>()
         if (torrents.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Other Sources", torrents.size)
-            torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true) { onAction(a) } }
+            torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true, lastPlayed = w.lastPlayedSource?.let { it == a.stream.historyKey() } == true) { onAction(a) } }
         }
 
         w.options.filterIsInstance<WatchAction.Unavailable>().firstOrNull()?.let { a -> Notice(a.reason) }
@@ -947,13 +956,13 @@ private fun SearchingPlaceholder(layout: WatchLayout) {
 
 /** The in-app source: big play disc, title, the facts the source stated (unknown shown as such), licence. */
 @Composable
-private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Boolean, modifier: Modifier, lastPlayed: Boolean = false, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(20.dp)
     val glow = if (featured) Brush.horizontalGradient(listOf(Cs.accent.copy(alpha = .22f), Cs.surface.copy(alpha = 0f))) else Brush.horizontalGradient(listOf(Cs.surface, Cs.surface))
     Row(modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.graphicsLayer { val k = if (focused) 1.015f else 1f; scaleX = k; scaleY = k }
         .clip(shape).background(Cs.surface, shape).background(glow, shape)
-        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (featured) Cs.accent.copy(alpha = .55f) else Cs.line, shape)
+        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (featured || lastPlayed) Cs.accent.copy(alpha = .55f) else Cs.line, shape)
         .clickable(onClick = onClick).padding(horizontal = if (compact) 14.dp else 22.dp, vertical = if (compact) 14.dp else 18.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 20.dp)) {
         Box(Modifier.size(if (compact) 48.dp else 60.dp).background(if (focused || featured) Cs.accent else Cs.surfaceHigh, androidx.compose.foundation.shape.CircleShape),
@@ -962,6 +971,7 @@ private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Bo
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(s.sourceName, color = Cs.text, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (lastPlayed) CsBadge("Last played")
             // Only what the source stated; anything else reads "unknown".
             val facts = listOf("Resolution" to s.resolution, "HDR" to s.hdr, "Audio" to s.audio, "Size" to s.sizeBytes?.let { formatSize(it) })
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1000,16 +1010,17 @@ private fun ServiceTile(name: String, sub: String, mine: Boolean, width: android
 }
 
 @Composable
-private fun SourceCard(s: PlayableStream, modifier: Modifier, otherSource: Boolean = false, onClick: () -> Unit) {
+private fun SourceCard(s: PlayableStream, modifier: Modifier, otherSource: Boolean = false, lastPlayed: Boolean = false, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(16.dp)
     Row(modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.graphicsLayer { val k = if (focused) 1.015f else 1f; scaleX = k; scaleY = k }
         .clip(shape).background(if (focused) Cs.surfaceHigh else Cs.surface, shape)
-        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape).clickable(onClick = onClick)
+        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (lastPlayed) Cs.accent else Cs.line, shape).clickable(onClick = onClick)
         .padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("▶", color = Cs.accent, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(if (otherSource) SourceDetails.heading(s) else s.sourceName, color = Cs.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (lastPlayed) CsBadge("Last played")
             if (otherSource) {
                 val details = remember(s) { SourceDetails.summary(s) }
                 Text(details, color = Cs.textMuted, fontSize = 12.sp)

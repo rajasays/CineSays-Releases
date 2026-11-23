@@ -39,6 +39,7 @@ data class WatchNowState(
     val services: List<Triple<Int, String, String>> = emptyList(),
     val myServiceIds: Set<Int> = emptySet(),
     val regions: List<String> = emptyList(),
+    val lastPlayedSource: String? = null,
     val error: String? = null
 ) { val isSeries get() = base.type == MediaType.EPISODE }
 
@@ -56,8 +57,19 @@ data class NativePlayback(
     val next: MediaRef? = null,
     /** The title, so "Find other sources" can reopen Watch Now. */
     val item: TitleItem? = null,
-    val torrent: TorrentPlayback? = null
+    val torrent: TorrentPlayback? = null,
+    val sourceKey: String? = null
 )
+
+internal fun PlayableStream.historyKey(): String? {
+    val identity = debridTorrent?.let {
+        "torrent:${it.hash.lowercase()}:${it.fileIndex ?: it.filename.orEmpty()}"
+    } ?: url?.let {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(it.toByteArray(Charsets.UTF_8))
+        "direct:$providerId:" + digest.joinToString("") { byte -> "%02x".format(byte) }
+    }
+    return identity
+}
 
 data class ResumePrompt(val playback: NativePlayback, val positionMs: Long)
 
@@ -73,6 +85,19 @@ data class StreamingState(
 )
 
 class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
+    private val sourceHistory = app.getSharedPreferences("last_played_sources", android.content.Context.MODE_PRIVATE)
+
+    fun rememberPlayedSource(playback: NativePlayback) {
+        val source = playback.sourceKey ?: return
+        sourceHistory.edit().putString(playback.record.key, source).apply()
+        _state.update { state ->
+            val watch = state.watchNow
+            if (watch?.selected?.key == playback.record.key)
+                state.copy(watchNow = watch.copy(lastPlayedSource = source))
+            else state
+        }
+    }
+
     private val _state = MutableStateFlow(StreamingState(prefs = PlaybackPrefs.load(app)))
     val state: StateFlow<StreamingState> = _state
     private val store get() = PlaybackStore.get(app)
@@ -208,7 +233,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun search(ref: MediaRef, force: Boolean = false) {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            _state.update { s -> s.copy(watchNow = s.watchNow?.copy(searching = true, search = null, options = emptyList())) }
+            _state.update { s -> s.copy(watchNow = s.watchNow?.copy(searching = true, search = null, options = emptyList(), lastPlayedSource = sourceHistory.getString(ref.key, null))) }
             var lookupError: String? = null
             val resolved = try {
                 if (force || ref.imdbId?.let { MediaRef.IMDB_ID.matches(it) } == true)
@@ -296,7 +321,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
                     else null
                 if (httpStream != null) {
                     if (_state.value.watchNow?.selected?.key == ref.key)
-                        startNative(httpStream, ref, item, saveUrl = false)
+                        startNative(httpStream, ref, item, saveUrl = false, sourceKey = stream.historyKey())
                     return@launch
                 }
                 if (!_state.value.prefs.progressiveTorrentStreaming) {
@@ -340,13 +365,13 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    private fun startNative(stream: PlayableStream, ref: MediaRef, item: TitleItem?, saveUrl: Boolean = true, torrent: TorrentPlayback? = null) {
+    private fun startNative(stream: PlayableStream, ref: MediaRef, item: TitleItem?, saveUrl: Boolean = true, torrent: TorrentPlayback? = null, sourceKey: String? = stream.historyKey()) {
         val url = stream.url ?: return
         val record = PlaybackRecord(key = ref.key, type = if (ref.type == MediaType.MOVIE) "movie" else "episode", tmdbId = ref.tmdbId,
             season = ref.season, episode = ref.episode, title = ref.title, episodeName = ref.episodeName, poster = ref.poster, imdbId = ref.imdbId,
             streamUrl = url.takeIf { saveUrl }, streamKind = stream.kind.name, sourceName = stream.sourceName, licence = stream.licence)
         begin(NativePlayback(ref.display + (ref.episodeName?.let { " · $it" } ?: ""), url, stream.kind, stream.subtitles, record, stream.licence,
-            stream.sourceName, next = ref.next(), item = item, torrent = torrent))
+            stream.sourceName, next = ref.next(), item = item, torrent = torrent, sourceKey = sourceKey))
     }
 
     /** A Free tab film, or "Watch free in CineSays" on a movie's page ([ref] = that movie, so progress follows the movie). */
