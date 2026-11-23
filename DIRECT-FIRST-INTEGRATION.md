@@ -45,3 +45,71 @@ The gateway may incur account usage, and immediate playback is not guaranteed.
 The app should not place a developer's single token in the public APK.
 
 The current code is an adapter and not a tested live gateway connection.
+
+## Free home gateway — TorrServer (implemented, not deployed)
+
+The app now has a concrete `TorrServerGateway.kt` adapter and a URL field in
+**Settings → Playback & Streaming**. This replaces the need for a paid gateway
+when the viewer has a compatible, user-controlled TorrServer instance. The source
+registry, source screens and local torrent playback are preserved.
+
+### Windows host setup (example)
+
+1. Download the **official** Windows 64-bit build from
+   https://github.com/YouROK/TorrServer/releases .
+2. Start TorrServer bound to the local interface only:
+
+   ```powershell
+   .\TorrServer-windows-amd64.exe --port 8090 --ip 127.0.0.1
+   ```
+
+   If the downloaded binary has another name, use that filename.
+3. Install Tailscale on the host and on the Android TV/phone. Join both devices
+   to the same tailnet. In Tailscale settings, enable MagicDNS and HTTPS certificates.
+4. On the host, run:
+
+   ```powershell
+   tailscale serve --bg 8090
+   tailscale serve status
+   ```
+
+   The output gives a private `https://<machine>.<tailnet>.ts.net` HTTPS hostname.
+   **Use Serve, never Funnel**, and do not forward port 8090 on the router.
+5. In CineSays Settings → Playback & Streaming, enter the HTTPS hostname,
+   enable **Authorized torrent-to-HTTP**, and leave **Progressive torrent**
+   enabled for fallback.
+6. Select an authorized torrent through the existing Watch Now source list.
+   CineSays first asks TorrServer to resolve the exact video file. If it is not
+   ready or cannot be selected unambiguously, the existing local torrent
+   engine remains available.
+
+CineSays accepts only HTTPS `.ts.net` URLs for this adapter, and the host
+must have a working, normally trusted TLS certificate. No passwords are placed
+into the APK. Tailnet access rules restrict which enrolled devices can reach
+the home gateway. Do not use this for an open/public TorrServer instance.
+
+### Technical details
+
+- Requests: `POST /torrents` (`action=add`, `action=get`),
+  then `GET /play/{infohash}/{fileId}` through Media3.
+- Uses the existing approved hash and source checks. Only matching filenames
+  or a single video file can be selected; no guessing among multiple episodes.
+- Remote torrent streaming still relies on active peers. It changes **where**
+  torrent buffering happens, not whether buffering can happen.
+- Current version uses an HTTPS tailnet service; HTTP-only LAN gateways are
+  deliberately not accepted, avoiding disabling Android cleartext restrictions.
+- A user must run the Windows/Linux/macOS server; adding this Kotlin adapter
+  does not install TorrServer or Tailscale on their devices.
+- No build, unit tests, emulator test, live server session, or APK release has
+  been completed in this workspace.
+
+### Test checklist
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+```
+
+Check: Android TV remote focus and settings field; correct Tailscale HTTPS URL;
+Big Buck Bunny authorized test stream; correct selected file; server unavailable
+fallback; seeking and range requests; subtitles; resume and Trakker; no
+regressions to Internet Archive or paid-provider-independent direct playback.
