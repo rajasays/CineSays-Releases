@@ -26,3 +26,22 @@ Baseline: `release/cinesays-1.8.6`. All changes remain on `feature/direct-stream
 3. Test `./gradlew :app:testDebugUnitTest :app:assembleDebug` locally, followed by device tests for source ordering, focus, subtitles, seek, playback resume, and torrent fallback.
 
 No Android build, unit tests, or device playback were executed by this GitHub-only change.
+
+## Premiumize gateway adapter
+
+`PremiumizeGateway.kt` implements the documented `POST /api/transfer/directdl`
+using a magnet URI for an approved source, a caller-supplied Bearer credential,
+and strict matching of the returned video filename. Ambiguous multi-video
+results are rejected instead of playing the wrong episode. An approved HTTPS
+link is returned for the existing Media3 player; the normal piece-aware torrent
+engine remains the fallback for cache misses, API errors, unsupported file
+formats, and absent credentials.
+
+**Activation still required:** no Premiumize account is connected, no API key or
+OAuth token has been provided, and `AuthorizedTorrentHttp.configure(...)` has
+not been wired into account sign-in/settings. Integrate device-code OAuth or
+secure user-specific credential storage before enabling for end users.
+The gateway may incur account usage, and immediate playback is not guaranteed.
+The app should not place a developer's single token in the public APK.
+
+The current code is an adapter and not a tested live gateway connection.
