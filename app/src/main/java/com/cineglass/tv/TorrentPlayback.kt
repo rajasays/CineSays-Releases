@@ -68,10 +68,10 @@ class TorrentPlayback private constructor(
     @Synchronized private fun prioritizeRead(piece: Int) {
         if (requestedPiece == piece) return
         val last = ((fileOffset + fileSize - 1) / pieceLength).toInt()
-        val next = TorrentRules.readWindow(piece, last).toSet()
+        val next = TorrentRules.adaptiveReadWindow(piece, last, pieceLength).toSet()
         (priorityWindow - next).forEach { runCatching { handle.resetPieceDeadline(it) } }
         next.forEach { index ->
-            if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 250)
+            if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 125)
         }
         priorityWindow = next
         requestedPiece = piece
