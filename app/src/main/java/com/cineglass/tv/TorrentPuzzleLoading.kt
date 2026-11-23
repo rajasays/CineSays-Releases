@@ -53,8 +53,11 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
                 val row = index / columns
                 puzzlePiece(col, row, columns, rows, width, height)
             }
-            val artwork = painter.intrinsicSize
-            val scale = if (artwork.width > 0f && artwork.height > 0f &&
+            // Coil has no intrinsic dimensions until it has resolved the artwork.
+            // Compose throws if width/height are read from Size.Unspecified.
+            val artwork = if (ready) painter.intrinsicSize else Size.Unspecified
+            val scale = if (artwork != Size.Unspecified &&
+                artwork.width > 0f && artwork.height > 0f &&
                 artwork.width.isFinite() && artwork.height.isFinite())
                 maxOf(size.width / artwork.width, size.height / artwork.height) else 0f
             val imageSize = if (scale > 0f) Size(artwork.width * scale, artwork.height * scale) else size
