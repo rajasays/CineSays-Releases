@@ -37,4 +37,14 @@ class AuthorizedTorrentHttpTest {
         })
         assertNull(AuthorizedTorrentHttp.resolve(torrent, movie))
     }
+    @Test fun gatewayOnlyAcceptsPrivateHttpsTailnet() {
+        assertEquals("https://nas.example-tailnet.ts.net",
+            TorrServerGateway.normalizedBase("https://nas.example-tailnet.ts.net/"))
+        assertNull(TorrServerGateway.normalizedBase("http://nas.example-tailnet.ts.net"))
+        assertNull(TorrServerGateway.normalizedBase("https://example.org"))
+        assertNull(TorrServerGateway.normalizedBase("https://nas.example-tailnet.ts.net.evil.org"))
+        assertNull(TorrServerGateway.normalizedBase("https://user:pass@nas.example-tailnet.ts.net"))
+        assertNull(TorrServerGateway.normalizedBase("https://nas.example-tailnet.ts.net/api"))
+    }
+
 }
