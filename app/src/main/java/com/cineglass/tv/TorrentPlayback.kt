@@ -54,31 +54,38 @@ class TorrentPlayback private constructor(
         }
     }
 
+    private var priorityWindow: Set<Int> = emptySet()
+    private var requestedPiece = -1
+
+    @Synchronized private fun prioritizeRead(piece: Int) {
+        if (requestedPiece == piece) return
+        val last = ((fileOffset + fileSize - 1) / pieceLength).toInt()
+        val next = TorrentRules.readWindow(piece, last).toSet()
+        (priorityWindow - next).forEach { runCatching { handle.resetPieceDeadline(it) } }
+        next.forEach { index ->
+            if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 250)
+        }
+        priorityWindow = next
+        requestedPiece = piece
+    }
+
     private fun waitForPiece(piece: Int) {
         if (closed.get()) throw IOException("Torrent session closed")
+        // Maintain look-ahead even when the requested piece is already available.
+        prioritizeRead(piece)
         if (handle.havePiece(piece)) return
-        // Prioritize the requested position, including a seek or an MP4 index at the end.
-        val last = ((fileOffset + fileSize - 1) / pieceLength).toInt()
-        val window = piece..minOf(piece.toLong() + 3, last.toLong()).toInt()
-        window.forEach { next ->
-            if (!handle.havePiece(next)) handle.setPieceDeadline(next, (next - piece) * 1000)
-        }
         val end = SystemClock.elapsedRealtime() + 25_000
-        try {
-            while (!closed.get()) {
-                if (handle.havePiece(piece)) return
-                if (SystemClock.elapsedRealtime() >= end) throw IOException("Timed out waiting for torrent peers")
-                try {
-                    Thread.sleep(100)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw IOException("Torrent read cancelled", e)
-                }
+        while (!closed.get()) {
+            if (handle.havePiece(piece)) return
+            if (SystemClock.elapsedRealtime() >= end) throw IOException("Timed out waiting for torrent peers")
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IOException("Torrent read cancelled", e)
             }
-            throw IOException("Torrent session closed")
-        } finally {
-            if (!closed.get()) window.forEach { next -> runCatching { handle.resetPieceDeadline(next) } }
         }
+        throw IOException("Torrent session closed")
     }
 
     private inner class TorrentDataSource : BaseDataSource(true) {
@@ -205,6 +212,12 @@ class TorrentPlayback private constructor(
                         handle.prioritizeFiles(Array(info.numFiles()) { if (it == index) Priority.NORMAL else Priority.IGNORE })
                         handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
                         handle.unsetFlags(TorrentFlags.UPLOAD_MODE)
+                        // Start headers and a possible end-of-file MP4 index concurrently.
+                        val firstPiece = (files.fileOffset(index) / info.pieceLength()).toInt()
+                        val lastPiece = ((files.fileOffset(index) + size - 1) / info.pieceLength()).toInt()
+                        TorrentRules.startupPieces(firstPiece, lastPiece).forEachIndexed { order, piece ->
+                            if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, order * 250)
+                        }
                         return TorrentPlayback(session, directory, handle, path, size, files.fileOffset(index), info.pieceLength())
                     }
                     delay(200)

@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -75,6 +77,8 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
     val state: StateFlow<StreamingState> = _state
     private val store get() = PlaybackStore.get(app)
     private val tmdbKey get() = BuildConfig.TMDB_API_KEY
+    private val mediaIds = MediaIdResolver { kind, id -> Api.tmdb.externalIds(kind, id, tmdbKey).imdbId }
+    private var metadataJob: Deferred<MediaRef>? = null
     private var searchJob: Job? = null
     private var episodesJob: Job? = null
     private var sourcePreparationJob: Job? = null
@@ -135,18 +139,27 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         item: TitleItem, imdbId: String?, offers: Map<String, ProviderRegion>, regions: Collection<String>,
         myServiceIds: Set<Int>, watched: Set<Pair<Int, Int>> = emptySet(), preselect: MediaRef? = null
     ) {
+        sourcePreparationJob?.cancel()
+        searchJob?.cancel()
+        episodesJob?.cancel()
+        metadataJob?.cancel()
         refreshStremio()
         val services = regions.sorted().flatMap { r -> offers[r]?.noExtraCost.orEmpty().map { p -> Triple(p.id, p.name, r) } }
         val isTv = item.kind == "tv"
         val base = MediaRef(if (isTv) MediaType.EPISODE else MediaType.MOVIE, item.id, item.label, imdbId, item.year.ifBlank { null }, poster = item.poster)
+        // Resolve IDs in parallel with the season list; Trakker refs do not contain IMDb IDs.
+        metadataJob = viewModelScope.async(Dispatchers.IO) { mediaIds.resolve(base) }
+        val initial = if (isTv) preselect?.takeIf { it.season != null && it.episode != null }
+            ?.let { base.copy(season = it.season, episode = it.episode, episodeName = it.episodeName) } else base
         val ws = WatchNowState(item, base, services = services, myServiceIds = myServiceIds, regions = regions.sorted(), watchedEpisodes = watched,
-            selected = if (isTv) null else base)
+            selected = initial)
         _state.update { it.copy(watchNow = ws) }
         pendingAuto = _state.value.prefs.destination != PlaybackDestination.ASK
-        if (!isTv) search(base) else loadSeasons(item, preselect)
+        initial?.let { search(it) }
+        if (isTv) loadSeasons(item, preselect)
     }
 
-    fun closeWatchNow() { sourcePreparationJob?.cancel(); searchJob?.cancel(); episodesJob?.cancel(); pendingAuto = false; _state.update { it.copy(watchNow = null) } }
+    fun closeWatchNow() { metadataJob?.cancel(); sourcePreparationJob?.cancel(); searchJob?.cancel(); episodesJob?.cancel(); pendingAuto = false; _state.update { it.copy(watchNow = null) } }
 
     private fun loadSeasons(item: TitleItem, preselect: MediaRef?) {
         episodesJob?.cancel()
@@ -184,6 +197,8 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
     fun selectEpisode(e: TrackerEpisode) {
         val w = _state.value.watchNow ?: return
         val ref = w.base.copy(season = e.season, episode = e.number, episodeName = e.name.ifBlank { null })
+        // Season loading may select the episode whose discovery has already started.
+        if (w.selected?.key == ref.key && (w.searching || w.search != null)) return
         _state.update { s -> s.copy(watchNow = s.watchNow?.copy(selected = ref)) }
         search(ref)
     }
@@ -194,11 +209,39 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _state.update { s -> s.copy(watchNow = s.watchNow?.copy(searching = true, search = null, options = emptyList())) }
-            val result = StreamRepository.search(app, ref, force)
+            var lookupError: String? = null
+            val resolved = try {
+                if (force || ref.imdbId?.let { MediaRef.IMDB_ID.matches(it) } == true)
+                    withContext(Dispatchers.IO) { mediaIds.resolve(ref) }
+                else metadataJob?.await()?.let { ref.copy(imdbId = it.imdbId) }
+                    ?: withContext(Dispatchers.IO) { mediaIds.resolve(ref) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val reason = if (e is IllegalStateException) e.message.orEmpty()
+                    else "Couldn't resolve this title's IMDb ID. Check your connection and try again."
+                lookupError = reason
+                ref // Keep existing Archive/service choices available if identifier lookup fails.
+            }
+            if (_state.value.watchNow?.selected?.key != ref.key) return@launch
+            _state.update { s -> s.copy(watchNow = s.watchNow?.let { w -> w.copy(
+                base = w.base.copy(imdbId = resolved.imdbId), selected = resolved) }) }
+            val found = StreamRepository.search(app, resolved, force) { partial ->
+                val current = _state.value.watchNow
+                if (current?.selected?.key == ref.key) {
+                    val choices = PlaybackRouter.options(resolved, partial, current.services, current.myServiceIds,
+                        _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+                        .filterNot { it is WatchAction.Unavailable }
+                    _state.update { state -> state.copy(watchNow = state.watchNow?.copy(search = partial, options = choices)) }
+                }
+            }
+            val result = lookupError?.let { found.copy(failures = found.failures + ("Title lookup" to it)) } ?: found
             val w = _state.value.watchNow ?: return@launch
             if (w.selected?.key != ref.key) return@launch
             // Service offers are per title (TMDB doesn't list per-episode availability).
-            val options = PlaybackRouter.options(ref, result, w.services, w.myServiceIds, _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+            val routed = PlaybackRouter.options(resolved, result, w.services, w.myServiceIds, _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+            val options = if (lookupError != null && routed.singleOrNull() is WatchAction.Unavailable)
+                listOf(WatchAction.Unavailable(lookupError!!)) else routed
             _state.update { s -> s.copy(watchNow = s.watchNow?.copy(searching = false, search = result, options = options)) }
             // A saved destination ("Play in CineSays when possible" / "My streaming service") acts once, on the press that opened Watch Now.
             if (pendingAuto) {

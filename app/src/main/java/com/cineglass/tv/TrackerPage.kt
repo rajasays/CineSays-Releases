@@ -30,25 +30,26 @@ import coil.compose.AsyncImage
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
-private val trackerBg=Color(0xFF071424)
-private val trackerPanel=Color(0xE0142941)
-private val trackerBlue=Color(0xFF118CFF)
-private val trackerWhite=Color(0xFFF4F8FF)
-private val trackerMuted=Color(0xFFB7C9E1)
+// Tracker colours follow the chosen theme (Settings › Themes).
+private val trackerBg: Color get() = Cs.bg
+private val trackerPanel: Color get() = Cs.panel
+private val trackerBlue: Color get() = Cs.accent
+private val trackerWhite: Color get() = Cs.text
+private val trackerMuted: Color get() = Cs.textMuted
 
 @Composable
 private fun TrackPanel(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit){
-    Column(modifier.border(1.dp,Color(0xFF385674),RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp))
-        .background(Brush.verticalGradient(listOf(Color(0xF020344E),trackerPanel)))
+    Column(modifier.border(1.dp,Cs.line,RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp))
+        .background(Brush.verticalGradient(listOf(Cs.surface,trackerPanel)))
         .padding(13.dp),verticalArrangement=Arrangement.spacedBy(10.dp),content=content)
 }
 @Composable
 private fun TrackButton(text:String, active:Boolean=false, modifier:Modifier=Modifier,onClick:()->Unit){
     var focused by remember { mutableStateOf(false) }
-    Box(modifier.onFocusChanged { focused=it.isFocused }.border(if(focused)2.dp else 1.dp,if(focused)Color.Cyan else if(active)trackerBlue else Color(0xFF5A7897),RoundedCornerShape(11.dp))
-        .background(if(focused||active)Brush.verticalGradient(listOf(Color(0xFF168DF5),Color(0xFF043C9A))) else Brush.verticalGradient(listOf(Color(0xFF223750),Color(0xFF122136))),RoundedCornerShape(11.dp))
+    Box(modifier.onFocusChanged { focused=it.isFocused }.border(if(focused)2.dp else 1.dp,if(focused)Cs.focusRing else if(active)trackerBlue else Cs.lineStrong,RoundedCornerShape(11.dp))
+        .background(if(focused||active)Cs.buttonFocus else Cs.surfaceHigh,RoundedCornerShape(11.dp))
         .clickable{onClick()}.padding(horizontal=14.dp,vertical=11.dp),contentAlignment=Alignment.Center){
-        Text(text,color=trackerWhite,fontWeight=if(focused||active)FontWeight.Bold else FontWeight.Medium,fontSize=13.sp,maxLines=1)
+        Text(text,color=trackerWhite,fontWeight=FontWeight.SemiBold,fontSize=13.sp,maxLines=1)
     }
 }
 @Composable
@@ -175,13 +176,13 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
             }
         }
         if(state.loading) LinearProgressIndicator(Modifier.fillMaxWidth(),color=trackerBlue)
-        state.message?.let{Text(it,color=Color(0xFFFFD8A4),fontSize=12.sp)}
-        if(state.matchStatus.isNotBlank()) Text(state.matchStatus,color=Color(0xFF90CCFF),fontSize=12.sp)
+        state.message?.let{Text(it,color=Cs.warn,fontSize=12.sp)}
+        if(state.matchStatus.isNotBlank()) Text(state.matchStatus,color=Cs.accent,fontSize=12.sp)
         state.preview?.let{preview->
             TrackPanel(Modifier.fillMaxWidth()){
                 Text("Import preview",fontWeight=FontWeight.Bold,color=trackerWhite,fontSize=19.sp)
                 Text("${preview.format} · ${preview.shows} shows · ${preview.watchedEpisodes} watched episodes · ${preview.watchedMovies} movies",color=trackerMuted)
-                preview.warnings.forEach{Text(it,color=Color(0xFFFFCF88),fontSize=12.sp)}
+                preview.warnings.forEach{Text(it,color=Cs.warn,fontSize=12.sp)}
                 Text("Import merges with existing tracking data. Nothing is uploaded to Firebase.",color=trackerWhite,fontSize=12.sp)
                 Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
                     TrackButton("Import tracking history",true){vm.confirmImport()}
@@ -212,12 +213,12 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                                 val count=state.releases.count{it.episode.airDate==d.toString()}
                                 var focused by remember(d){mutableStateOf(false)}
                                 Column(Modifier.weight(1f).onFocusChanged { focused=it.isFocused }
-                                    .border(if(focused)2.dp else 1.dp,if(focused)Color.Cyan else if(d==selectedDate)trackerBlue else Color(0xFF36546E),RoundedCornerShape(10.dp))
-                                    .background(if(d==selectedDate)Color(0xFF074A89) else Color(0xFF1B2D43),RoundedCornerShape(10.dp))
+                                    .border(if(focused)2.dp else 1.dp,if(focused)Cs.focusRing else if(d==selectedDate)trackerBlue else Cs.line,RoundedCornerShape(10.dp))
+                                    .background(if(d==selectedDate)Cs.buttonFocus else Cs.surface,RoundedCornerShape(10.dp))
                                     .clickable { selectedDate=d }.padding(vertical=10.dp),horizontalAlignment=Alignment.CenterHorizontally){
                                     Text(d.dayOfWeek.name.take(3),fontSize=11.sp,color=trackerMuted)
                                     Text("${d.dayOfMonth}",fontWeight=FontWeight.Bold,color=trackerWhite,fontSize=20.sp)
-                                    Text("$count",color=Color(0xFF89D7FF),fontSize=11.sp)
+                                    Text("$count",color=Cs.accent,fontSize=11.sp)
                                 }
                             }
                         }
@@ -257,7 +258,7 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                     }
                     TrackPanel(Modifier.weight(.85f)){
                         TrackerSectionTitle("♨ Watch Streak")
-                        Text("${state.stats.streak} Days",color=Color(0xFF80D0FF),fontWeight=FontWeight.Bold,fontSize=26.sp)
+                        Text("${state.stats.streak} Days",color=Cs.accent,fontWeight=FontWeight.Bold,fontSize=26.sp)
                         Text("Consecutive days watched, from history with valid dates",color=trackerMuted,fontSize=11.sp)
                     }
                 }
@@ -302,10 +303,14 @@ fun CineTrackerPage(vm:TrackerViewModel, openTitle: (String, Int) -> Unit = { _,
                 val shown = state.shows.filter { s -> letter == null || (s.title.trim().firstOrNull()?.uppercaseChar()?.let { if (it in 'A'..'Z') it else '#' } ?: '#') == letter }
                 Text(if (letter == null) "${shown.size} series" else "${shown.size} series starting with $letter", color = Cs.textMuted, fontSize = 13.sp)
                 val perRow = if (LocalCompact.current) 1 else 3
-                shown.chunked(perRow).forEach{group->Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
+                // A page at a time: 180+ cards with artwork at once is heavy on a TV.
+                var showLimit by remember(letter, shown.size) { mutableIntStateOf(45) }
+                shown.take(showLimit).chunked(perRow).forEach{group->Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
                     group.forEach{show->TrackerShowCard(show,Modifier.weight(1f)){vm.selectShow(show)}}
                     repeat(perRow-group.size){Spacer(Modifier.weight(1f))}
                 }}
+                if (shown.size > showLimit) CsButton("Show more (${shown.size - showLimit} left)") { showLimit += 45 }
+                Unit
             }
             "Movies" -> {
                 if (state.movies.isEmpty()) TrackerEmpty("No watched movies yet. Use “✓ Watched” on any movie's details, or import from TV Time / BingeBoxd.")
@@ -373,7 +378,7 @@ private fun episodeRef(show: TrackedShow?, season: Int, number: Int, name: Strin
             val isToday = d == today
             // Phones: tighter cells, centred, and just the release count, so nothing wraps.
             Column(Modifier.weight(1f).border(1.dp, if (isToday) Cs.accent else Cs.line, RoundedCornerShape(12.dp))
-                .background(if (isToday) Color(0xFF0A3A6E) else Cs.surface, RoundedCornerShape(12.dp))
+                .background(if (isToday) Cs.buttonFocus else Cs.surface, RoundedCornerShape(12.dp))
                 .padding(horizontal = if (narrow) 2.dp else 12.dp, vertical = if (narrow) 8.dp else 10.dp),
                 horizontalAlignment = if (narrow) Alignment.CenterHorizontally else Alignment.Start,
                 verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -467,19 +472,19 @@ private fun episodeRef(show: TrackedShow?, season: Int, number: Int, name: Strin
         AsyncImage(model=release.poster?.let{"https://image.tmdb.org/t/p/w185$it"},contentDescription=null,modifier=Modifier.size(43.dp,54.dp).clip(RoundedCornerShape(6.dp)),contentScale=ContentScale.Crop)
         Column {Text(release.show,color=trackerWhite,fontWeight=FontWeight.SemiBold,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             Text("S${release.episode.season} E${release.episode.number} · ${release.episode.name}",color=trackerMuted,fontSize=11.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-            Text(release.episode.airDate.orEmpty(),color=Color(0xFF73C7FF),fontSize=10.sp)}
+            Text(release.episode.airDate.orEmpty(),color=Cs.accent,fontSize=10.sp)}
     }
 }
 @Composable private fun TrackerShowCard(show:TrackedShow, modifier:Modifier=Modifier,onClick:()->Unit){
     var focused by remember{mutableStateOf(false)}
-    Row(modifier.onFocusChanged { focused=it.isFocused }.border(if(focused)2.dp else 1.dp,if(focused)Color.Cyan else Color(0xFF385674),RoundedCornerShape(13.dp))
+    Row(modifier.onFocusChanged { focused=it.isFocused }.border(if(focused)2.dp else 1.dp,if(focused)Cs.focusRing else Cs.line,RoundedCornerShape(13.dp))
         .background(trackerPanel,RoundedCornerShape(13.dp)).clickable{onClick()}.padding(10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
         AsyncImage(show.poster?.let{"https://image.tmdb.org/t/p/w185$it"},contentDescription=show.title,modifier=Modifier.size(55.dp,79.dp).clip(RoundedCornerShape(6.dp)),contentScale=ContentScale.Crop)
         Column {
             Text(show.title,color=trackerWhite,fontWeight=FontWeight.Bold,fontSize=14.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
-            Text("${show.watchedCount} episodes watched",color=Color(0xFF85CBFF),fontSize=12.sp)
+            Text("${show.watchedCount} episodes watched",color=Cs.accent,fontSize=12.sp)
             Text(if(show.followed) "Following" else "Archived / Unfollowed",color=trackerMuted,fontSize=11.sp)
-            if(show.tmdbId==0)Text("TMDB match needed",color=Color(0xFFFFCD86),fontSize=11.sp)
+            if(show.tmdbId==0)Text("TMDB match needed",color=Cs.warn,fontSize=11.sp)
         }
     }
 }
@@ -537,12 +542,12 @@ private fun episodeRef(show: TrackedShow?, season: Int, number: Int, name: Strin
                 val done=(ep.season to ep.number) in watched
                 var focused by remember(show.title,ep.season,ep.number){mutableStateOf(false)}
                 Column(Modifier.weight(1f).onFocusChanged{ focused=it.isFocused }
-                    .border(if(focused)3.dp else 1.dp,if(focused)Color.Cyan else if(done)Color(0xFF2CA876) else Color(0xFF416587),RoundedCornerShape(10.dp))
-                    .background(Color(0xFF10273B),RoundedCornerShape(10.dp)).clickable{chosenEp=ep}.padding(9.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                    .border(if(focused)3.dp else 1.dp,if(focused)Cs.focusRing else if(done)Color(0xFF2CA876) else Cs.lineStrong,RoundedCornerShape(10.dp))
+                    .background(Cs.surface,RoundedCornerShape(10.dp)).clickable{chosenEp=ep}.padding(9.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                     AsyncImage(model=ep.still?.let{"https://image.tmdb.org/t/p/w300$it"},contentDescription=null,modifier=Modifier.fillMaxWidth().height(75.dp).clip(RoundedCornerShape(7.dp)),contentScale=ContentScale.Crop)
                     Text("E${ep.number} · ${ep.name}",color=trackerWhite,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
                     Text(ep.airDate.orEmpty(),color=trackerMuted,fontSize=10.sp)
-                    Text(if(done)"✓ Watched" else "○ Mark watched",color=if(done)Color(0xFF72E8AE) else Color(0xFF8BC8FF),fontSize=12.sp)
+                    Text(if(done)"✓ Watched" else "○ Mark watched",color=if(done)Cs.good else Cs.accent,fontSize=12.sp)
                 }
             }
             repeat(4-group.size){Spacer(Modifier.weight(1f))}

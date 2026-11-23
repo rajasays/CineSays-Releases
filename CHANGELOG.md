@@ -1,3 +1,11 @@
+## 2026-11-23 — Source discovery and torrent startup
+
+Show provider results as they arrive, remove normal registry refresh from the critical path, and preserve bounded read-ahead with startup header/index priorities. See SOURCE-STARTUP-UPDATE.md for complete changes and verification limits.
+
+## 2026-11-22 — Trakker Watch Now source discovery
+
+Resolve/cache missing show IMDb IDs, start selected-episode discovery alongside season loading, suppress duplicate searches and separate identifier failures from empty source results. UI and torrent transport unchanged. See TRAKKER-DISCOVERY-FIX.md for complete changes and validation limits.
+
 ## 2026-11-22 — Source heading cleanup and size order
 
 Neutral source card headings, smallest-first size ordering, and removal of Real-Debrid playback and Settings controls. See SOURCE-ORDER-UPDATE.md for scope and validation.
