@@ -65,7 +65,10 @@ class TorrentPlayback private constructor(
 
     private var priorityWindow: Set<Int> = emptySet()
     private var requestedPiece = -1
+    private val firstFilePiece = (fileOffset / pieceLength).toInt()
+    private val lastFilePiece = ((fileOffset + fileSize - 1) / pieceLength).toInt()
     private var lastPeerDiagnosticsAt = 0L
+    private val startupWarmupUsed = AtomicBoolean(false)
 
     @Synchronized private fun logPeerDiagnostics(now: Long) {
         if (now - lastPeerDiagnosticsAt < 5_000) return
@@ -77,15 +80,40 @@ class TorrentPlayback private constructor(
     }
 
     @Synchronized private fun prioritizeRead(piece: Int) {
+        // MP4/MKV parsers may probe the final pieces while downloading the start.
+        // Give the probe an urgent deadline but never replace the active playback
+        // window with the tail probe's window.
+        if (TorrentRules.isTailProbe(piece, firstFilePiece, lastFilePiece, requestedPiece)) {
+            if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, 0)
+            Log.i("CineSaysTorrent", "tail_probe piece=$piece playbackPiece=$requestedPiece")
+            return
+        }
         if (requestedPiece == piece) return
-        val last = ((fileOffset + fileSize - 1) / pieceLength).toInt()
-        val next = TorrentRules.adaptiveReadWindow(piece, last, pieceLength).toSet()
+        val next = TorrentRules.adaptiveReadWindow(piece, lastFilePiece, pieceLength).toSet()
         (priorityWindow - next).forEach { runCatching { handle.resetPieceDeadline(it) } }
         next.forEach { index ->
             if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 125)
         }
         priorityWindow = next
         requestedPiece = piece
+    }
+
+    private fun warmupNextPiece(position: Long) {
+        // Bounded warmup on the first forward read reduces the chance of
+        // starting the decoder with one piece and immediately rebuffering.
+        if (position != 0L || !startupWarmupUsed.compareAndSet(false, true)) return
+        val next = TorrentRules.startupWarmupPieces(firstFilePiece, lastFilePiece).getOrNull(1) ?: return
+        val startedAt = SystemClock.elapsedRealtime()
+        while (!closed.get() && !handle.havePiece(next) &&
+            SystemClock.elapsedRealtime() - startedAt < 1_200) {
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+        Log.i("CineSaysTorrent", "startup_warmup nextReady=${handle.havePiece(next)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}")
     }
 
     private fun waitForPiece(piece: Int) {
@@ -132,7 +160,10 @@ class TorrentPlayback private constructor(
             position = dataSpec.position
             remaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) fileSize - position
                 else minOf(dataSpec.length, fileSize - position)
-            if (remaining > 0) waitForPiece(((fileOffset + position) / pieceLength).toInt())
+            if (remaining > 0) {
+                waitForPiece(((fileOffset + position) / pieceLength).toInt())
+                warmupNextPiece(position)
+            }
             input = RandomAccessFile(file, "r").also { it.seek(position) }
             requestUri = dataSpec.uri
             opened = true
