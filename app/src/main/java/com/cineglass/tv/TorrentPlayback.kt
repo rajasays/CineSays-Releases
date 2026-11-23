@@ -137,6 +137,17 @@ class TorrentPlayback private constructor(
     }
 
     @Synchronized private fun prioritizeRead(piece: Int, readerId: Int) {
+        // Resume and remote seeking may open a far-away HTTP range while the
+        // initial reader still holds playback ownership. Promote the new range
+        // immediately; metadata tail probes remain excluded. Superseded readers
+        // cannot steal priority back during their own cancellation/cleanup.
+        if (!priorityOwners.isPrimary(readerId) &&
+            priorityOwners.canPromote(readerId) &&
+            TorrentRules.isSeekJump(piece, requestedPiece, firstFilePiece, lastFilePiece) &&
+            priorityOwners.promote(readerId)) {
+            Log.i("CineSaysTorrent", "seek_handoff fromPiece=$requestedPiece toPiece=$piece")
+            requestedPiece = -1
+        }
         if (!priorityOwners.isPrimary(readerId)) {
             // Metadata probes and overlapping HTTP requests must not reset the
             // sequential playback window. Allow one urgent piece per auxiliary
