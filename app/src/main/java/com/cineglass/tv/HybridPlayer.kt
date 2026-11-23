@@ -406,7 +406,7 @@ private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.(
 @OptIn(UnstableApi::class)
 private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPrefs): ExoPlayer {
     val http = DefaultHttpDataSource.Factory().setUserAgent("CineSays/${BuildConfig.VERSION_NAME} (Android TV)")
-        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(15_000)
+        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) 40_000 else 15_000)
     val load = if (prefs.buffering == "large") DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 120_000, 2_500, 6_000).build()
         else DefaultLoadControl()
     val player = ExoPlayer.Builder(context)
