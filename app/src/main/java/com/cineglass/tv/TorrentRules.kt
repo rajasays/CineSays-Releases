@@ -59,6 +59,11 @@ internal object TorrentRules {
             playbackPiece in firstPiece..(firstPiece.toLong() + 8).coerceAtMost(lastPiece.toLong()).toInt() &&
             requestedPiece >= lastPiece - 2
 
+    /** Metadata-only reads in the final three pieces must never own video scheduling. */
+    fun isMetadataTailRange(piece: Int, firstPiece: Int, lastPiece: Int): Boolean =
+        piece in firstPiece..lastPiece && lastPiece.toLong() - firstPiece > 16L &&
+            piece.toLong() >= lastPiece.toLong() - 2L
+
     /** Only ask for an extra startup piece when its time budget is bounded. */
     fun startupWarmupPieces(first: Int, last: Int): List<Int> =
         if (first < 0 || last < first) emptyList() else listOf(first, minOf(first.toLong() + 1, last.toLong()).toInt()).distinct()
@@ -81,19 +86,19 @@ internal object TorrentRules {
  * Callers synchronize access to this class with their torrent-session lock.
  */
 internal class TorrentPriorityOwners {
-    private val readers = LinkedHashSet<Int>()
+    private val readers = LinkedHashMap<Int, Boolean>()
     var primary: Int? = null
         private set
 
-    fun enter(readerId: Int) {
-        if (readers.add(readerId) && primary == null) primary = readerId
+    fun enter(readerId: Int, eligible: Boolean = true) {
+        if (readers.putIfAbsent(readerId, eligible) == null && primary == null && eligible) primary = readerId
     }
 
     /** True when the playback scheduling owner changed. */
     fun leave(readerId: Int): Boolean {
-        if (!readers.remove(readerId)) return false
+        if (readers.remove(readerId) == null) return false
         if (primary != readerId) return false
-        primary = readers.firstOrNull()
+        primary = readers.entries.firstOrNull { it.value }?.key
         return true
     }
 
