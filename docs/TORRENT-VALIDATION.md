@@ -13,3 +13,11 @@ Run the tests and build with the matching official jlibtorrent desktop runtime:
 Append `-PtorrentPeerTest=true` on a host where libtorrent can open a listener to run the tracker-free TCP peer-transfer case. The case reads the TCP port from libtorrent's listen alert. In this workspace the listener probe reported port 0 and emitted neither a success nor a failure alert, even when configured with a fixed loopback port. A successful test without this option does not validate peer transfer. Without the native JAR, both native cases skip.
 
 Android TV validation remains pending. Use the original authorized sources at 5:16, 13:00 and 14:00 and check the other playback routes and UI regression cases listed in [the investigation](TORRENT-STREAMING-INVESTIGATION.md). No measured improvement on those streams is claimed.
+
+## Follow-up candidate
+
+The follow-up branch adds approved tracker hints, peer retention and refresh, a looping poster puzzle, a pinned Last played source, and seek recovery. The debug build passed with 83 passing tests and one skipped live-peer case. The live-peer case remains separate from the test that verifies native piece selection and storage using generated data.
+
+The latest device log records a cold start on an alternate source in about 9.1 seconds, a resume around 2:00 in about 22.6 seconds, a forward seek to 33:59 in 14.2 seconds and a backward seek to 18:01 in 8.0 seconds. Both seeks returned to Ready without a player error. The tester confirmed that the earlier 46-second startup attempt ended when they backed out or switched sources. That attempt did not reach a first frame and does not measure completion time.
+
+Before publishing, confirm the device coverage for this candidate. On Android TV, check cold start, saved-position resume through Last played, jumps beyond the buffer in both directions, and Back during loading. Use streams you are authorized to test. The production APK needs the existing release signing key and production configuration from the maintainer's local Android Studio setup.
