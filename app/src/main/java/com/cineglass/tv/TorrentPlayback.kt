@@ -88,8 +88,10 @@ class TorrentPlayback private constructor(
         }.onFailure { Log.w("CineSaysTorrent", "peer_status unavailable: ${it.javaClass.simpleName}") }
     }
 
-    @Synchronized private fun registerReader(readerId: Int) {
-        priorityOwners.enter(readerId)
+    @Synchronized private fun registerReader(readerId: Int, piece: Int) {
+        val metadataOnly = TorrentRules.isMetadataTailRange(piece, firstFilePiece, lastFilePiece)
+        priorityOwners.enter(readerId, eligible = !metadataOnly)
+        if (metadataOnly) Log.i("CineSaysTorrent", "metadata_reader piece=$piece excludedFromPlaybackOwner=true")
     }
 
     @Synchronized private fun releaseReader(readerId: Int) {
@@ -170,6 +172,7 @@ class TorrentPlayback private constructor(
         val startedAt = SystemClock.elapsedRealtime()
         val end = startedAt + 25_000
         var nextPriorityUpdateAt = startedAt + 500
+        var nextStalledPieceRefreshAt = startedAt + 5_000
         while (!closed.get()) {
             val now = SystemClock.elapsedRealtime()
             if (handle.havePiece(piece)) {
@@ -183,6 +186,18 @@ class TorrentPlayback private constructor(
                 nextPriorityUpdateAt = now + 500
             }
             if (now - startedAt >= 2_000) logPeerDiagnostics(now)
+            if (now >= nextStalledPieceRefreshAt) {
+                // A piece can be starved by the swarm even while unrelated
+                // torrent data downloads. Refresh only this missing piece's
+                // deadline; don't reset the playback window or other readers.
+                synchronized(this) {
+                    if (!closed.get() && !handle.havePiece(piece)) {
+                        handle.setPieceDeadline(piece, 0)
+                        Log.i("CineSaysTorrent", "piece_reprioritized piece=$piece waitedMs=${now - startedAt}")
+                    }
+                }
+                nextStalledPieceRefreshAt = now + 5_000
+            }
             if (now >= end) {
                 Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt}")
                 throw IOException("Timed out waiting for torrent peers")
@@ -214,7 +229,8 @@ class TorrentPlayback private constructor(
             position = dataSpec.position
             remaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) fileSize - position
                 else minOf(dataSpec.length, fileSize - position)
-            registerReader(readerId)
+            val openingPiece = ((fileOffset + position.coerceAtMost((fileSize - 1).coerceAtLeast(0))) / pieceLength).toInt()
+            registerReader(readerId, openingPiece)
             registered = true
             try {
                 if (remaining > 0) {
