@@ -411,7 +411,7 @@ private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPref
         else DefaultLoadControl()
     val player = ExoPlayer.Builder(context)
         .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
-        .setMediaSourceFactory(DefaultMediaSourceFactory(p.torrent?.dataSourceFactory() ?: DefaultDataSource.Factory(context, http)))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(if (p.torrent != null && !p.url.startsWith("http://127.0.0.1:")) p.torrent.dataSourceFactory() else DefaultDataSource.Factory(context, http)))
         .setLoadControl(load)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         .setSeekBackIncrementMs(10_000).setSeekForwardIncrementMs(10_000)
