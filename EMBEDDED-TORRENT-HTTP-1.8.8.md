@@ -61,3 +61,27 @@ Build and device verification remain required after these commits. In Android St
 `.\\gradlew.bat :app:testDebugUnitTest :app:assembleDebug`
 
 Compare one permitted Torrentio source before and after: playback startup, buffering interruptions in first two minutes, seeking, then WebTorrent MP4 playback/seek. Capture `adb logcat -d -v time -s CineSaysTorrent:V` if issues persist.
+
+## Stable multi-reader piece scheduling (follow-up)
+
+Latest device capture observed ~4 MiB/s aggregate download but individual pieces waiting 19–21 seconds, suggesting that overlapping HTTP range requests and container probes were replacing important near-playback deadlines. The following scheduler change is limited to the existing embedded torrent player:
+
+- The first active HTTP file reader owns the forward playback priority window. Other readers may request one piece at a time, but cannot reset that primary window.
+- A reader leaving or being cancelled transfers ownership to the next active reader (important for seeking); a waiting reader rechecks ownership every 500 ms so promotion does not require a new HTTP request.
+- Last-three-piece container tail probes retain their urgent deadline behavior without taking over playback priorities.
+- `peer_status` now includes `readyAheadPieces` while stalled. `ready_ahead`, `auxiliary_piece` and `priority_handoff` markers help diagnose scheduling decisions without logging source URLs or peer addresses.
+- JUnit regression tests verify overlapping readers and ownership transfers. The active WebTorrent path, source selection, allowed torrent hashes, and all UI features are unchanged.
+
+**Verification pending:** these commits have not yet been compiled or installed on a test device. Run:
+```powershell
+cd D:\Projects\CineSays
+git switch feature/embedded-torrent-http-1.8.8
+git pull origin feature/embedded-torrent-http-1.8.8
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+```
+Then compare the same authorized Torrentio source, including repeated seeking, pause/replay, and the previously working WebTorrent MP4. Collect:
+```powershell
+adb logcat -c
+# Reproduce playback and seeking
+adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrentio-scheduler-test.log
+```
