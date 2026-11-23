@@ -3,6 +3,7 @@ package com.cineglass.tv
 import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
@@ -64,6 +65,16 @@ class TorrentPlayback private constructor(
 
     private var priorityWindow: Set<Int> = emptySet()
     private var requestedPiece = -1
+    private var lastPeerDiagnosticsAt = 0L
+
+    @Synchronized private fun logPeerDiagnostics(now: Long) {
+        if (now - lastPeerDiagnosticsAt < 5_000) return
+        lastPeerDiagnosticsAt = now
+        runCatching {
+            val status = handle.status()
+            Log.i("CineSaysTorrent", "peer_status peers=${status.numPeers()} downloadKiBps=${status.downloadRate() / 1024} pieceBytes=$pieceLength")
+        }.onFailure { Log.w("CineSaysTorrent", "peer_status unavailable: ${it.javaClass.simpleName}") }
+    }
 
     @Synchronized private fun prioritizeRead(piece: Int) {
         if (requestedPiece == piece) return
@@ -82,10 +93,20 @@ class TorrentPlayback private constructor(
         // Maintain look-ahead even when the requested piece is already available.
         prioritizeRead(piece)
         if (handle.havePiece(piece)) return
-        val end = SystemClock.elapsedRealtime() + 25_000
+        val startedAt = SystemClock.elapsedRealtime()
+        val end = startedAt + 25_000
         while (!closed.get()) {
-            if (handle.havePiece(piece)) return
-            if (SystemClock.elapsedRealtime() >= end) throw IOException("Timed out waiting for torrent peers")
+            val now = SystemClock.elapsedRealtime()
+            if (handle.havePiece(piece)) {
+                val waited = now - startedAt
+                if (waited >= 500) Log.i("CineSaysTorrent", "piece_ready piece=$piece waitMs=$waited")
+                return
+            }
+            if (now - startedAt >= 2_000) logPeerDiagnostics(now)
+            if (now >= end) {
+                Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt}")
+                throw IOException("Timed out waiting for torrent peers")
+            }
             try {
                 Thread.sleep(100)
             } catch (e: InterruptedException) {
