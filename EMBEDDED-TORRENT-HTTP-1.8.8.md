@@ -162,3 +162,26 @@ adb logcat -c
 adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-deadline-mode-test.log
 ```
 Confirm `scheduler_mode deadline_window sequential=false` appears, compare piece-0 completion and request block movement and flag any `priority=IGNORE` for the selected video. Keep PR #4 draft until successful build and on-device regressions.
+
+## Resume/seek release-candidate fix — 2026-11-23
+
+Device log `torrent-deadline-mode-test.log` showed some titles playing from the beginning but failing when resuming around 13–14 minutes or seeking to 5:16. Pieces at the seek region were often mostly downloaded (e.g. 130/135 blocks for piece 310, or 133/135 for piece 122) before the original fixed 25-second timeout. Logs confirmed requested piece `priority=SEVEN` and `scheduler_mode deadline_window sequential=false`. This is evidence of slow or uneven completion **and** competing old/new HTTP range reads, not proof of unavailable peers.
+
+Two narrow changes:
+1. **One-way seek handoff:** When an eligible secondary HTTP reader requests a piece 16+ pieces away from the current playback piece, hand it ownership immediately. The previous reader cannot reclaim ownership while it closes. End-of-file metadata readers remain ineligible. Logs `seek_handoff fromPiece=... toPiece=...`.
+2. **Progress-aware finite wait:** Keep original 25-second minimum wait for a missing piece, then extend only while that **specific requested piece** is accumulating finished blocks. Timeout after 10 seconds of no new finished blocks, or 60 seconds total, whichever comes first. Uses libtorrent partial queue to measure progress, never aggregate torrent throughput. Logs `piece_wait_extended` when a piece crosses 25 s with continuing progress. This changes no global player network timeout and cannot make unavailable pieces stream.
+
+Tests added to `TorrentStartupTest.kt` for far-seek classification, metadata exemption, no ownership ping-pong, stale/no-progress timeout, ongoing-progress extension and 60s hard cap.
+
+**Do not publish without testing**:
+```powershell
+cd D:\Projects\CineSays
+git switch feature/embedded-torrent-http-1.8.8
+git pull origin feature/embedded-torrent-http-1.8.8
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+adb logcat -c
+# Install debug build and test Title 1: start, resume 14:00, seek 5:16; Title 2: resume 13:00.
+# Retest authorized WebTorrent Big Buck Bunny, playback/seek/pause/replay, Other Sources and non-torrent streaming.
+adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-seek-release-test.log
+```
+Publish only after build, unit tests, two resume scenarios and regressions pass. If slow sources still fail, keep the existing Other Sources fallback and do not automatically retry forever.
