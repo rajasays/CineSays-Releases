@@ -987,7 +987,7 @@ fun PlaybackSettingsSection(prefs: PlaybackPrefs, stremioInstalled: Boolean, str
         PlaybackDestination.SERVICE.name to "My streaming service"), prefs.destination.name) { v -> onChange { it.copy(destination = PlaybackDestination.valueOf(v)) } }
     Choice("Count as watched at", listOf("80" to "80%", "90" to "90%", "95" to "95%"), Math.round(prefs.completeAt * 100).toString()) { v -> onChange { it.copy(completeAt = v.toInt() / 100.0) } }
     Choice("Buffering", listOf("standard" to "Standard", "large" to "More buffer (unsteady internet)"), prefs.buffering) { v -> onChange { it.copy(buffering = v) } }
-    Choice("Source discovery", listOf("onTitle" to "When selecting a title", "onPlay" to "When pressing Watch Now"), prefs.discovery) { v -> onChange { it.copy(discovery = v) } }
+    Text("Source discovery: when opening Watch Now for a movie or choosing an episode.", color = Cs.textSoft, fontSize = 13.sp)
     Choice("Preferred source", listOf("direct" to "Direct HLS / MP4 first", "torrent" to "Torrent first"), prefs.preferredSource) { v -> onChange { it.copy(preferredSource = v) } }
     Choice("Progressive torrent streaming", listOf("true" to "Enabled", "false" to "Disabled"), prefs.progressiveTorrentStreaming.toString()) { v -> onChange { it.copy(progressiveTorrentStreaming = v.toBoolean()) } }
     Choice("Authorized torrent-to-HTTP", listOf("true" to "Enabled when configured", "false" to "Disabled"), prefs.authorizedTorrentToHttpPlayback.toString()) { v -> onChange { it.copy(authorizedTorrentToHttpPlayback = v.toBoolean()) } }
