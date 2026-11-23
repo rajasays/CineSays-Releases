@@ -11,7 +11,7 @@ import com.google.gson.JsonParser
 // name, title/description, subtitles[] and behaviorHints. CineSays treats add-on output as untrusted
 // data: nothing is executed, every field is type-checked, and a stream is only playable when it is an
 // https URL on a host the CineSays add-on list allows for that add-on. BitTorrent results (infoHash /
-// magnet) are recognised. Curated sources can expose a separate Real-Debrid action.
+// magnet) are recognised. Approved torrent hashes can use free local or home-server playback.
 
 data class StremioManifest(
     val id: String, val name: String, val version: String,
@@ -62,12 +62,12 @@ object StremioProtocol {
      * Parses a stream response. [allowedHosts] are the hosts the CineSays add-on list permits for this
      * add-on; anything else is listed as unsupported with the reason.
      */
-    fun parseStreams(json: String, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String> = emptySet(), allowTorrentStreams: Boolean = false, allowDebrid: Boolean = true): List<PlayableStream> {
+    fun parseStreams(json: String, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String> = emptySet(), allowTorrentStreams: Boolean = false): List<PlayableStream> {
         val arr = runCatching { JsonParser.parseString(json).asJsonObject.arr("streams") }.getOrNull() ?: return emptyList()
-        return arr.take(MAX_STREAMS).mapNotNull { e -> if (e.isJsonObject) runCatching { parseStream(e.asJsonObject, addonId, addonName, allowedHosts, authorizedHashes, allowTorrentStreams, allowDebrid) }.getOrNull() else null }
+        return arr.take(MAX_STREAMS).mapNotNull { e -> if (e.isJsonObject) runCatching { parseStream(e.asJsonObject, addonId, addonName, allowedHosts, authorizedHashes, allowTorrentStreams) }.getOrNull() else null }
     }
 
-    private fun parseStream(o: JsonObject, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String>, allowTorrentStreams: Boolean, allowDebrid: Boolean): PlayableStream? {
+    private fun parseStream(o: JsonObject, addonId: String, addonName: String, allowedHosts: Collection<String>, authorizedHashes: Set<String>, allowTorrentStreams: Boolean): PlayableStream? {
         val name = o.str("name")?.take(80)
         val title = (o.str("title") ?: o.str("description"))?.take(if (allowTorrentStreams) 2000 else 200)
         val label = listOfNotNull(name, title).joinToString(" · ").ifBlank { null }
@@ -92,7 +92,7 @@ object StremioProtocol {
             val index = o.get("fileIdx")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
                 ?.asString?.toIntOrNull()?.takeIf { it >= 0 }
             hash?.lowercase()?.takeIf { Regex("[0-9a-f]{40}").matches(it) && (allowTorrentStreams || it in authorizedHashes) && (!o.has("fileIdx") || o.get("fileIdx").isJsonNull || index != null) }
-                ?.let { DebridTorrent(it, index, hints?.str("filename")?.take(512), directPlayback = allowTorrentStreams, debridPlayback = allowDebrid) }
+                ?.let { DebridTorrent(it, index, hints?.str("filename")?.take(512), directPlayback = (allowTorrentStreams || it in authorizedHashes), debridPlayback = false) }
         } else null
         if (torrent != null && (url == null || url.startsWith("magnet:", true))) {
             return stream(null, StreamKind.TORRENT, false, null).copy(debridTorrent = torrent)
