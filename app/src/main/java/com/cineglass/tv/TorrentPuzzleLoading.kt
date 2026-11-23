@@ -38,6 +38,8 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 @Composable
 internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String, bufferedMs: Long = 0L) {
@@ -59,8 +61,12 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
     }
     val assembly = remember(artworkUrl) { Animatable(0f) }
     LaunchedEffect(artworkUrl, bitmap) {
-        assembly.snapTo(0f)
-        if (bitmap != null) assembly.animateTo(1f, tween(6500))
+        if (bitmap == null) return@LaunchedEffect
+        while (isActive) {
+            assembly.snapTo(0f)
+            assembly.animateTo(1f, tween(6500))
+            delay(750)
+        }
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF090E19))) {
