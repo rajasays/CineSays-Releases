@@ -10,11 +10,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -26,24 +27,44 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImagePainter
-import coil.compose.rememberAsyncImagePainter
+import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.core.graphics.drawable.toBitmap
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
+import kotlin.math.roundToInt
 
 @Composable
 internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String, bufferedMs: Long = 0L) {
     val artworkUrl = poster?.takeIf { it.isNotBlank() }?.let {
         if (it.startsWith("http", ignoreCase = true)) it else "https://image.tmdb.org/t/p/w342/${it.trimStart('/')}"
     }
-    val painter = rememberAsyncImagePainter(artworkUrl)
-    val artworkPainter = (painter.state as? AsyncImagePainter.State.Success)?.painter
+    val context = LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(null, artworkUrl, context) {
+        value = null
+        val url = artworkUrl ?: return@produceState
+        val request = ImageRequest.Builder(context).data(url).allowHardware(false).size(720).build()
+        val result = context.imageLoader.execute(request)
+        if (result is SuccessResult) {
+            value = result.drawable.toBitmap().asImageBitmap()
+            Log.d("CineSaysTorrent", "puzzle_poster_ready")
+        } else {
+            Log.w("CineSaysTorrent", "puzzle_poster_load_failed")
+        }
+    }
     val assembly = remember(artworkUrl) { Animatable(0f) }
-    LaunchedEffect(artworkUrl, artworkPainter) {
+    LaunchedEffect(artworkUrl, bitmap) {
         assembly.snapTo(0f)
-        if (artworkPainter != null) assembly.animateTo(1f, tween(6500))
+        if (bitmap != null) assembly.animateTo(1f, tween(6500))
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF090E19))) {
-        if (artworkPainter != null) Box(Modifier.fillMaxSize().drawWithCache {
+        bitmap?.let { image -> Box(Modifier.fillMaxSize().drawWithCache {
             val columns = if (size.width > size.height) 5 else 3
             val rows = if (columns == 5) 3 else 5
             val width = size.width / columns
@@ -53,16 +74,12 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
                 val row = index / columns
                 puzzlePiece(col, row, columns, rows, width, height)
             }
-            // Coil has no intrinsic dimensions until it has resolved the artwork.
-            // Compose throws if width/height are read from Size.Unspecified.
-            val artwork = artworkPainter.intrinsicSize
-            val scale = if (artwork != Size.Unspecified &&
-                artwork.width > 0f && artwork.height > 0f &&
-                artwork.width.isFinite() && artwork.height.isFinite())
-                maxOf(size.width / artwork.width, size.height / artwork.height) else 0f
-            val imageSize = if (scale > 0f) Size(artwork.width * scale, artwork.height * scale) else size
-            val imageX = (size.width - imageSize.width) / 2f
-            val imageY = (size.height - imageSize.height) / 2f
+            val scale = maxOf(size.width / image.width, size.height / image.height)
+            val imageSize = IntSize((image.width * scale).roundToInt(), (image.height * scale).roundToInt())
+            val imageOrigin = IntOffset(
+                ((size.width - imageSize.width) / 2f).roundToInt(),
+                ((size.height - imageSize.height) / 2f).roundToInt()
+            )
             onDrawBehind {
                 val time = assembly.value
                 pieces.forEachIndexed { index, path ->
@@ -74,9 +91,7 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
                         val y = if (index % 3 == 0) -.45f * height else .45f * height
                         translate(x * (1f - progress), y * (1f - progress)) {
                             clipPath(path) {
-                                translate(imageX, imageY) {
-                                    with(artworkPainter) { draw(imageSize, alpha = progress) }
-                                }
+                                drawImage(image, dstOffset = imageOrigin, dstSize = imageSize, alpha = progress)
                             }
                             drawPath(path, Color(0xFF090E19).copy(alpha = .48f * progress),
                                 style = Stroke(1.5.dp.toPx()))
@@ -84,7 +99,7 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
                     }
                 }
             }
-        })
+        }) }
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
             0f to Color.Black.copy(alpha = .16f),
             .55f to Color.Black.copy(alpha = .24f),
