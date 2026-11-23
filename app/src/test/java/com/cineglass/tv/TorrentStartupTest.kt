@@ -21,6 +21,20 @@ class TorrentStartupTest {
         assertTrue(TorrentRules.adaptiveReadWindow(10, 9, 256 * 1024).isEmpty())
         assertTrue(TorrentRules.adaptiveReadWindow(10, 20, 0).isEmpty())
     }
+    @Test fun tailProbeDoesNotDisplaceStartupPlaybackWindow() {
+        assertTrue(TorrentRules.isTailProbe(1024, 0, 1024, 0))
+        assertTrue(TorrentRules.isTailProbe(1023, 0, 1024, 3))
+        assertFalse(TorrentRules.isTailProbe(1024, 0, 1024, 250))
+        assertFalse(TorrentRules.isTailProbe(15, 0, 1024, 0))
+        assertFalse(TorrentRules.isTailProbe(12, 0, 12, 0))
+        assertFalse(TorrentRules.isTailProbe(200, 50, 500, -1))
+    }
+    @Test fun startupWarmupIsBoundedToSelectedVideo() {
+        assertEquals(listOf(0, 1), TorrentRules.startupWarmupPieces(0, 1024))
+        assertEquals(listOf(12), TorrentRules.startupWarmupPieces(12, 12))
+        assertEquals(listOf(Int.MAX_VALUE), TorrentRules.startupWarmupPieces(Int.MAX_VALUE, Int.MAX_VALUE))
+        assertTrue(TorrentRules.startupWarmupPieces(3, 2).isEmpty())
+    }
     @Test fun readAheadIsBoundedAtEndAndIntegerLimit() {
         assertEquals(listOf(98, 99), TorrentRules.readWindow(98, 99))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
