@@ -110,7 +110,12 @@ internal class LocalTorrentHttp private constructor(
                     val elapsedMs = SystemClock.elapsedRealtime() - requestStarted
                     if (elapsedMs >= 3_000) Log.i("CineSaysTorrent", "http_transfer method=${parts[0]} kind=$requestKind bytes=$writtenBytes elapsedMs=$elapsedMs")
                 } catch (e: Exception) {
-                    Log.w("CineSaysTorrent", "http_failure method=${parts[0]} kind=$requestKind headersSent=$headersSent bytes=$writtenBytes elapsedMs=${SystemClock.elapsedRealtime() - requestStarted} cause=${e.javaClass.simpleName}")
+                    // Seeking and metadata probing commonly cancel a range request.
+                    // A socket closed by Media3 after headers is not a torrent failure.
+                    val abortedByClient = headersSent && e is SocketException
+                    val detail = "http_${if (abortedByClient) "client_closed" else "failure"} method=${parts[0]} kind=$requestKind headersSent=$headersSent bytes=$writtenBytes elapsedMs=${SystemClock.elapsedRealtime() - requestStarted} cause=${e.javaClass.simpleName}"
+                    if (abortedByClient) Log.i("CineSaysTorrent", detail)
+                    else Log.w("CineSaysTorrent", detail)
                     if (!headersSent && !closed.get()) runCatching {
                         reply(socket, 503, "Service Unavailable")
                     }
