@@ -3,9 +3,6 @@ package com.cineglass.tv
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -113,26 +110,31 @@ object StreamRepository {
         synchronized(addonProviders) { addonProviders.clear() }
     }
 
-    suspend fun search(context: Context, ref: MediaRef, force: Boolean = false): StreamSearch {
-        if (!force) synchronized(cache) { cache[ref.key]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
+    suspend fun search(context: Context, ref: MediaRef, force: Boolean = false,
+                       onPartial: (StreamSearch) -> Unit = {}): StreamSearch {
+        Addons.loadSaved(context)
+        val cacheKey = "${ref.key}:${ref.stremioId.orEmpty()}:${Addons.enabled(context)}"
+        if (!force) synchronized(cache) { cache[cacheKey]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
         if (force) clearCache()
-        Addons.refresh(context, force = force)
-        val results = coroutineScope {
+        if (force) Addons.refresh(context, force = true) else Addons.refreshInBackground(context)
+        val results = collectProgressively<Pair<String, Result<List<PlayableStream>>>>(
             providers(context).map { p ->
-                async {
-                    val r = runCatching { withTimeoutOrNull(PER_PROVIDER_TIMEOUT_MS) { p.streamsFor(ref) } }
-                    p.name to r.fold(onSuccess = { it?.let { s -> Result.success(s) } ?: Result.failure(java.io.IOException("Timed out")) },
-                        onFailure = { e -> if (e is kotlinx.coroutines.CancellationException) throw e; Result.failure(e) })
-                }
-            }.awaitAll()
+            suspend {
+                val r = runCatching { withTimeoutOrNull(PER_PROVIDER_TIMEOUT_MS) { p.streamsFor(ref) } }
+                p.name to r.fold(onSuccess = { it?.let { s -> Result.success(s) } ?: Result.failure(java.io.IOException("Timed out")) },
+                    onFailure = { e -> if (e is kotlinx.coroutines.CancellationException) throw e; Result.failure(e) })
+            }
+        }) { completed ->
+            onPartial(StreamSearch(completed.flatMap { it.second.getOrNull() ?: emptyList<PlayableStream>() },
+                completed.mapNotNull { (n, r) -> r.exceptionOrNull()?.let { n to friendly(it) } }.toMap()))
         }
-        val streams = results.flatMap { it.second.getOrNull().orEmpty() }
+        val streams = results.flatMap { it.second.getOrNull() ?: emptyList<PlayableStream>() }
         val failures = results.mapNotNull { (n, r) -> r.exceptionOrNull()?.let { n to friendly(it) } }.toMap()
         failures.forEach { (n, why) -> Log.w(TAG, "source '$n' failed for ${ref.key}: $why") } // no URLs or tokens in logs
         val search = StreamSearch(streams, failures)
         if (failures.isEmpty()) synchronized(cache) {
             if (cache.size >= 64) cache.entries.minByOrNull { it.value.first }?.let { cache.remove(it.key) }
-            cache[ref.key] = System.currentTimeMillis() to search
+            cache[cacheKey] = System.currentTimeMillis() to search
         }
         return search
     }

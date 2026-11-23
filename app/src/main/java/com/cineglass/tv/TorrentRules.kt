@@ -23,11 +23,21 @@ internal object TorrentRules {
         return candidates.singleOrNull()
     }
 
+    // A leading "/" is rejected explicitly: on Windows, File("/video.mp4").isAbsolute is false (no drive letter),
+    // so isAbsolute alone doesn't catch Unix-style rooted paths on every platform.
     fun safePath(directory: File, relative: String): Boolean = runCatching {
-        relative.isNotBlank() && !File(relative).isAbsolute && !relative.contains('\\') &&
+        relative.isNotBlank() && !relative.startsWith("/") && !File(relative).isAbsolute && !relative.contains('\\') &&
             !relative.contains(':') && relative.split('/').none { it == ".." } &&
             File(directory, relative).canonicalFile.toPath().startsWith(directory.canonicalFile.toPath())
     }.getOrDefault(false)
+
+    fun readWindow(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList()
+        else (first..minOf(first.toLong() + 3, last.toLong()).toInt()).toList()
+
+    fun startupPieces(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList()
+        else (readWindow(first, last) + listOf(maxOf(first, last - 1), last)).distinct()
 
     fun hasSpace(size: Long, free: Long, pieceLength: Int): Boolean {
         // Leave room for metadata, boundary pieces, and normal app operation. Avoid Long overflow.
