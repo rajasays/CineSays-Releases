@@ -78,24 +78,33 @@ internal class LocalTorrentHttp private constructor(
                 val extra = if (range == null) "" else "Content-Range: bytes $from-$to/$size\r\n"
                 val header = "HTTP/1.1 $status\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n$extra" +
                     "Content-Length: $count\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
-                val out = socket.getOutputStream()
-                out.write(header.toByteArray(Charsets.US_ASCII))
-                if (parts[0] == "HEAD") { out.flush(); return }
-                val source = factory.createDataSource()
+                val source = if (parts[0] == "GET") factory.createDataSource() else null
+                var headersSent = false
                 try {
-                    source.open(DataSpec.Builder().setUri(Uri.parse(url)).setPosition(from).setLength(count).build()
-                        .copyUriForTorrent())
-                    var left = count
-                    val bytes = ByteArray(64 * 1024)
-                    while (left > 0 && !closed.get()) {
-                        val read = source.read(bytes, 0, minOf(left, bytes.size.toLong()).toInt())
-                        if (read == C.RESULT_END_OF_INPUT || read <= 0) break
-                        out.write(bytes, 0, read)
-                        left -= read
+                    // Do not announce a successful HTTP response until its first
+                    // verified torrent piece is readable. On peer timeout, return 503
+                    // instead of a misleading 200 with an abruptly truncated body.
+                    source?.open(DataSpec.Builder().setUri(sourceUri).setPosition(from).setLength(count).build())
+                    val out = socket.getOutputStream()
+                    out.write(header.toByteArray(Charsets.US_ASCII))
+                    headersSent = true
+                    if (source != null) {
+                        var left = count
+                        val bytes = ByteArray(64 * 1024)
+                        while (left > 0 && !closed.get()) {
+                            val read = source.read(bytes, 0, minOf(left, bytes.size.toLong()).toInt())
+                            if (read == C.RESULT_END_OF_INPUT || read <= 0) break
+                            out.write(bytes, 0, read)
+                            left -= read
+                        }
                     }
                     out.flush()
+                } catch (_: Exception) {
+                    if (!headersSent && !closed.get()) runCatching {
+                        reply(socket, 503, "Service Unavailable")
+                    }
                 } finally {
-                    source.close()
+                    source?.close()
                 }
             } catch (_: Exception) {
                 // Client disconnect, seek interruption, or an unavailable torrent piece.
@@ -103,9 +112,6 @@ internal class LocalTorrentHttp private constructor(
             }
         }
     }
-
-    // The piece-aware data source validates the original local file URI, not our HTTP endpoint.
-    private fun DataSpec.copyUriForTorrent(): DataSpec = buildUpon().setUri(sourceUri).build()
 
     private fun reply(socket: Socket, code: Int, reason: String) {
         val msg = "HTTP/1.1 $code $reason\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
