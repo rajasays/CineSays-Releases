@@ -35,6 +35,20 @@ internal object TorrentRules {
         if (first < 0 || last < first) emptyList()
         else (first..minOf(first.toLong() + 3, last.toLong()).toInt()).toList()
 
+    /**
+     * Keep roughly 8 MiB of verified pieces scheduled ahead of the current read.
+     * Torrent piece sizes vary substantially between sources; a fixed four-piece
+     * window can represent less than one second of high-bitrate video.
+     * Bound the window to 4..16 pieces so a slow peer swarm is not overwhelmed.
+     */
+    fun adaptiveReadWindow(first: Int, last: Int, pieceLength: Int): List<Int> {
+        if (first < 0 || last < first || pieceLength <= 0) return emptyList()
+        val targetBytes = 8L * 1024 * 1024
+        val desired = ((targetBytes + pieceLength - 1) / pieceLength).coerceIn(4L, 16L)
+        return (first.toLong()..minOf(first.toLong() + desired - 1, last.toLong()))
+            .map { it.toInt() }
+    }
+
     fun startupPieces(first: Int, last: Int): List<Int> =
         if (first < 0 || last < first) emptyList()
         else (readWindow(first, last) + listOf(maxOf(first, last - 1), last)).distinct()
