@@ -120,3 +120,25 @@ adb logcat -c
 adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-piece-diagnostics.log
 ```
 Compare the same source and another **independently seeded, authorized torrent**. Do not release until compile and device regressions pass. No content authorization, source-discovery, UI, playback deadlines, or player behavior changed in this diagnostic pass.
+
+## Source health and non-destructive fallback (2026-11-23)
+
+Following three Torrentio tests (one repeatedly stalled, another played, Big Buck Bunny remained playable), this update adapts the **existing CineSays player warning**, not the overall UI or source registry.
+
+- Torrent playback shows a source-specific warning after **15 consecutive seconds buffering**, whether at startup or later after seeking.
+- The warning displays a read-only snapshot of libtorrent peer count, connected-peer availability for the current requested piece and verified consecutive pieces ahead. Distinguishes no connected peers, no connected peers advertising the piece, scarce peers and slow piece delivery without claiming any guaranteed source quality.
+- The existing **Other sources** action is available directly in the warning. It already returns to Watch Now through the main activity, keeping the title/episode selection and its discovered source list intact. There is **no automatic torrent switching** or unexpected provider calls.
+- The old HTTP-specific slow-start warning is preserved for regular HLS/MP4/DASH streams.
+- All source-health polling occurs on Dispatchers.IO and is limited to once every five seconds while stalled; no additional torrent prioritization, deadlines or permissions are changed.
+- Pure JVM tests cover the classification cases; no UI screenshot or layout redesign was introduced.
+
+### Verify
+```powershell
+cd D:\Projects\CineSays
+git switch feature/embedded-torrent-http-1.8.8
+git pull origin feature/embedded-torrent-http-1.8.8
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+```
+Install the new debug APK. Confirm the problematic source exposes a helpful warning and **Other sources** button after 15s; that returning to Watch Now retains the selected episode, available choices and D-pad focus; test a playable Torrentio source, WebTorrent Bunny and regular HLS/MP4 streams for regressions. Run `adb logcat -c` before testing and `adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-health-test.log` afterward.
+
+**This change is not yet locally compiled or device tested.** Preserve the draft PR until tests pass.
