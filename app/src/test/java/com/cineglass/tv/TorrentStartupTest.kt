@@ -87,6 +87,16 @@ class TorrentStartupTest {
         assertEquals(5, owners.primary)
     }
 
+    @Test fun sourceHealthWarningsAreAdvisoryAndGroundedInPeerState() {
+        assertTrue(TorrentHealthRules.message(0, 0, 0, 4).contains("Connecting"))
+        assertTrue(TorrentHealthRules.message(0, 0, 0, 15).contains("No torrent peers"))
+        assertTrue(TorrentHealthRules.message(10, 0, 0, 20).contains("aren't advertising"))
+        assertTrue(TorrentHealthRules.message(10, 1, 0, 20).contains("Only a few"))
+        assertTrue(TorrentHealthRules.message(10, 8, 0, 20).contains("too slowly"))
+        assertTrue(TorrentHealthRules.message(10, null, 0, 20).contains("too slowly"))
+        assertTrue(TorrentHealthRules.message(10, 8, 2, 20).contains("may resume"))
+    }
+
     @Test fun readAheadIsBoundedAtEndAndIntegerLimit() {
         assertEquals(listOf(98, 99), TorrentRules.readWindow(98, 99))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
