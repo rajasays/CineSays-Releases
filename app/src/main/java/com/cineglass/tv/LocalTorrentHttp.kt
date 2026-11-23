@@ -1,5 +1,7 @@
 package com.cineglass.tv
 
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.C
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DataSource
@@ -18,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Private, per-playback HTTP byte-range bridge for the existing verified piece-aware
  * libtorrent data source. Nothing is exposed on the LAN, and no external server is used.
  */
+@OptIn(UnstableApi::class)
 internal class LocalTorrentHttp private constructor(
     private val listener: ServerSocket,
     private val factory: DataSource.Factory,
