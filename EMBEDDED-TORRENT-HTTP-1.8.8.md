@@ -35,3 +35,11 @@ Published v1.8.7 and v1.8.6 remain untouched.
 - Regression coverage added for small/large piece sizes, end-of-file and integer boundaries.
 - These changes may improve playback smoothness when sources have enough peers; they do not change peer availability, codecs, rights checks or device storage requirements.
 - Rebuild and compare Torrentio buffering with the previous v1.8.8 build; WebTorrent MP4 seek/play/pause and direct streaming are regression checks.
+
+## Buffering diagnostic instrumentation
+- Logcat tag `CineSaysTorrent` now emits `player_buffering`, `player_buffering_end` and `player_error` for torrent playback only.
+- `piece_ready` logs piece waits >=500 ms; `piece_timeout` records 25-second failures. `peer_status` samples connected peers, download KiB/s, and piece size no more often than every five seconds while reads stall.
+- The loopback bridge logs `http_first_piece` (>1 s), `http_transfer` (>3 s) and `http_failure`. It never logs stream URLs, auth tokens, peer IPs or torrent hashes.
+- All diagnostics are on the existing v1.8.8 branch; no UI behavior, torrent permissions, or download timeouts were changed.
+- Build: `./gradlew.bat :app:testDebugUnitTest :app:assembleDebug`.
+- Reproduce buffering; capture with `adb logcat -d -v time -s CineSaysTorrent:V > cinesays-torrent-diag.log`. To collect logs reliably, clear logcat immediately before playback, reproduce, and run the capture command while the affected device remains connected.
