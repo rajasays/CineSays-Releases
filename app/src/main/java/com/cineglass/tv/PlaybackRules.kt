@@ -22,14 +22,15 @@ object PlaybackRouter {
      */
     fun options(
         ref: MediaRef, search: StreamSearch, services: List<Triple<Int, String, String>>, myServiceIds: Set<Int>,
-        stremioInstalled: Boolean, preferredHeight: Int? = null
+        stremioInstalled: Boolean, preferredHeight: Int? = null, preferredSource: String = "direct"
     ): List<WatchAction> {
         val native = rankNative(search.playable, preferredHeight).map { WatchAction.PlayNative(it) }
         val svc = services.distinctBy { it.first }.sortedBy { if (it.first in myServiceIds) 0 else 1 }
             .map { (id, name, region) -> WatchAction.OpenService(id, name, region) }
         val stremio = if (stremioInstalled) stremioLink(ref)?.let { listOf(WatchAction.OpenStremio(it)) }.orEmpty() else emptyList()
         val torrents = search.streams.filter { supportsDirectTorrent(it.debridTorrent) }.map { WatchAction.PlayTorrent(it) }
-        val all = native + svc + stremio + torrents
+        val all = if (preferredSource == "torrent") torrents + native + svc + stremio
+            else native + torrents + svc + stremio
         if (all.isNotEmpty()) return all
         val why = when {
             search.unsupported.isNotEmpty() -> "Sources were found, but none can play in CineSays."
