@@ -12,6 +12,9 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import com.frostwire.jlibtorrent.Priority
 import com.frostwire.jlibtorrent.SessionManager
+import com.frostwire.jlibtorrent.SessionParams
+import com.frostwire.jlibtorrent.SettingsPack
+import com.frostwire.jlibtorrent.swig.settings_pack
 import com.frostwire.jlibtorrent.Sha1Hash
 import com.frostwire.jlibtorrent.TorrentFlags
 import com.frostwire.jlibtorrent.TorrentHandle
@@ -143,6 +146,19 @@ class TorrentPlayback private constructor(
         selection.apply(deadlines)
     }
 
+    private val peerRefresh = TorrentPeerRefresh()
+
+    private fun refreshPeersIfNeeded(piece: Int, now: Long, waitedMs: Long, finishedBlocks: Int) {
+        if (waitedMs < 6_000 || finishedBlocks > 0 || closed.get()) return
+        val available = handle.pieceAvailability().getOrNull(piece) ?: return
+        if (!peerRefresh.claim(now, available)) return
+
+        // Keep tracker minimum intervals and use the engine's discovery paths.
+        handle.forceReannounce()
+        handle.forceDHTAnnounce()
+        Log.i("CineSaysTorrent", "piece_peer_refresh piece=$piece waitMs=$waitedMs")
+    }
+
     private fun waitForPiece(piece: Int, readerId: Int, last: Int, cancellation: TorrentReadCancellation?) {
         if (closed.get()) throw IOException("Torrent session closed")
         // Maintain look-ahead even when the requested piece is already available.
@@ -169,6 +185,7 @@ class TorrentPlayback private constructor(
                     val finished = handle.getDownloadQueue()
                         .firstOrNull { it.pieceIndex() == piece }?.finished() ?: 0
                     budget.observe(now, finished)
+                    refreshPeersIfNeeded(piece, now, now - startedAt, finished)
                 }.onFailure {
                     Log.w("CineSaysTorrent", "piece_progress unavailable: ${it.javaClass.simpleName}")
                 }
@@ -302,7 +319,11 @@ class TorrentPlayback private constructor(
                     }
                 } else null
                 currentCoroutineContext().ensureActive()
-                session.start()
+                // Range readers briefly leave no wanted pieces between requests. Keep
+                // connected seeds through those internal transitions.
+                session.start(SessionParams(SettingsPack().setBoolean(
+                    settings_pack.bool_types.close_redundant_connections.swigValue(), false
+                )))
                 val downloadAddedAt = SystemClock.elapsedRealtime()
                 if (descriptor != null) session.download(descriptor, directory, null, null, null, TorrentFlags.UPLOAD_MODE)
                 else session.download(torrent.magnetUri(), directory, TorrentFlags.UPLOAD_MODE)

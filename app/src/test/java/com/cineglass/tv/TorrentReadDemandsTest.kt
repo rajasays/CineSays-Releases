@@ -64,4 +64,13 @@ class TorrentReadDemandsTest {
         assertEquals(setOf(1, 2, 5), ignored.toSet())
     }
 
+    @Test fun peerRefreshIsReservedForMissingSourcesAndSharedAcrossReaders() {
+        val refresh = TorrentPeerRefresh()
+        assertFalse(refresh.claim(6_000, advertisedPeers = 2))
+        assertTrue(refresh.claim(6_000, advertisedPeers = 0))
+        assertFalse(refresh.claim(6_000, advertisedPeers = 0))
+        assertFalse(refresh.claim(25_999, advertisedPeers = 0))
+        assertTrue(refresh.claim(26_000, advertisedPeers = 0))
+    }
+
 }

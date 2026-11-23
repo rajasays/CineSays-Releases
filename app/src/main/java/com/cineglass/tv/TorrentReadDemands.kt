@@ -59,3 +59,15 @@ internal class TorrentPieceSelection(
         deadlines = next.toMap()
     }
 }
+
+/** Share the announce cooldown across all readers and HTTP retries of a playback. */
+internal class TorrentPeerRefresh {
+    private var nextAllowedAt = 0L
+
+    @Synchronized
+    fun claim(nowMs: Long, advertisedPeers: Int): Boolean {
+        if (advertisedPeers != 0 || nowMs < nextAllowedAt) return false
+        nextAllowedAt = nowMs + 20_000
+        return true
+    }
+}
