@@ -16,7 +16,7 @@ Baseline: `release/cinesays-1.8.6`. All changes remain on `feature/direct-stream
 
 - No Movies.do or LoadShare private API scraping, session cookies, signed URL harvesting or attempts to bypass service restrictions.
 - No Plex AVOD partner credentials or licensed catalog, because partner approval is required.
-- No Real-Debrid re-enablement or paid provider.
+- No Premiumize, Real-Debrid, or subscription-based playback API.
 - No new APK or release version.
 
 ## Next engineering tasks
@@ -27,24 +27,17 @@ Baseline: `release/cinesays-1.8.6`. All changes remain on `feature/direct-stream
 
 No Android build, unit tests, or device playback were executed by this GitHub-only change.
 
-## Premiumize gateway adapter
+## Free-only policy
 
-`PremiumizeGateway.kt` implements the documented `POST /api/transfer/directdl`
-using a magnet URI for an approved source, a caller-supplied Bearer credential,
-and strict matching of the returned video filename. Ambiguous multi-video
-results are rejected instead of playing the wrong episode. An approved HTTPS
-link is returned for the existing Media3 player; the normal piece-aware torrent
-engine remains the fallback for cache misses, API errors, unsupported file
-formats, and absent credentials.
+Paid torrent-to-HTTP integrations are not shipped: Premiumize and the
+legacy Real-Debrid API/client, credential settings and paid debrid parser
+flags were removed. Curated authorized torrent hashes remain supported
+through local progressive torrent playback and the optional self-hosted
+TorrServer adapter.
 
-**Activation still required:** no Premiumize account is connected, no API key or
-OAuth token has been provided, and `AuthorizedTorrentHttp.configure(...)` has
-not been wired into account sign-in/settings. Integrate device-code OAuth or
-secure user-specific credential storage before enabling for end users.
-The gateway may incur account usage, and immediate playback is not guaranteed.
-The app should not place a developer's single token in the public APK.
-
-The current code is an adapter and not a tested live gateway connection.
+The `DebridTorrent` data type is a legacy internal name for torrent
+metadata, not a request to a paid service. No paid-service credentials
+are required for this implementation.
 
 ## Free home gateway — TorrServer (implemented, not deployed)
 
