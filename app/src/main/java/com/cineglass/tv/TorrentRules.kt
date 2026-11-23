@@ -79,6 +79,34 @@ internal object TorrentRules {
     }
 }
 
+
+/**
+ * An incomplete requested piece can take longer than 25 seconds even when
+ * blocks keep arriving. Extend only on verified block progress. Never extend
+ * if no blocks have arrived within the last 10 seconds or beyond 60 seconds.
+ * Inputs are monotonic elapsed realtime milliseconds.
+ */
+internal class TorrentPieceWaitBudget(private val startedAtMs: Long) {
+    private var bestFinishedBlocks = 0
+    private var lastProgressAtMs = startedAtMs
+
+    fun observe(nowMs: Long, finishedBlocks: Int) {
+        if (finishedBlocks > bestFinishedBlocks) {
+            bestFinishedBlocks = finishedBlocks
+            lastProgressAtMs = nowMs
+        }
+    }
+
+    fun expired(nowMs: Long): Boolean {
+        val elapsed = nowMs - startedAtMs
+        if (elapsed < 25_000) return false
+        return elapsed >= 60_000 || bestFinishedBlocks == 0 ||
+            nowMs - lastProgressAtMs >= 10_000
+    }
+
+    fun extended(nowMs: Long): Boolean = nowMs - startedAtMs >= 25_000 && !expired(nowMs)
+}
+
 /**
  * Tracks concurrent HTTP range readers without tying the priority window to the
  * most recent request. The oldest active reader owns forward playback scheduling;
