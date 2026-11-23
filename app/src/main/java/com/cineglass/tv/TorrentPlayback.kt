@@ -45,11 +45,19 @@ class TorrentPlayback private constructor(
 ) {
     private val closed = AtomicBoolean()
     val uri: String = Uri.fromFile(file).toString()
+    val contentLength: Long get() = fileSize
+    private var loopback: LocalTorrentHttp? = null
+
+    @Synchronized fun loopbackUrl(): String {
+        if (closed.get()) throw IOException("Torrent session closed")
+        return (loopback ?: LocalTorrentHttp.start(this).also { loopback = it }).url
+    }
 
     fun dataSourceFactory(): DataSource.Factory = DataSource.Factory { TorrentDataSource() }
 
     fun close() {
         if (closed.compareAndSet(false, true)) {
+            synchronized(this) { loopback?.close(); loopback = null }
             cleanup.execute { dispose(session, directory) }
         }
     }
