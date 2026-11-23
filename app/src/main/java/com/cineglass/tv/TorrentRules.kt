@@ -74,6 +74,32 @@ internal object TorrentRules {
     }
 }
 
+/**
+ * Tracks concurrent HTTP range readers without tying the priority window to the
+ * most recent request. The oldest active reader owns forward playback scheduling;
+ * when it closes, ownership transfers to the next active reader (including seeks).
+ * Callers synchronize access to this class with their torrent-session lock.
+ */
+internal class TorrentPriorityOwners {
+    private val readers = LinkedHashSet<Int>()
+    var primary: Int? = null
+        private set
+
+    fun enter(readerId: Int) {
+        if (readers.add(readerId) && primary == null) primary = readerId
+    }
+
+    /** True when the playback scheduling owner changed. */
+    fun leave(readerId: Int): Boolean {
+        if (!readers.remove(readerId)) return false
+        if (primary != readerId) return false
+        primary = readers.firstOrNull()
+        return true
+    }
+
+    fun isPrimary(readerId: Int): Boolean = primary == readerId
+}
+
 internal fun supportsDirectTorrent(torrent: DebridTorrent?): Boolean {
     if (torrent == null || !Regex("[0-9a-f]{40}").matches(torrent.hash)) return false
     if (torrent.directPlayback) return true
