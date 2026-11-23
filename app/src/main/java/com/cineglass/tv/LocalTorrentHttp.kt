@@ -21,7 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class LocalTorrentHttp private constructor(
     private val listener: ServerSocket,
     private val factory: DataSource.Factory,
-    private val size: Long
+    private val size: Long,
+    private val sourceUri: Uri
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val token = UUID.randomUUID().toString().replace("-", "")
@@ -102,7 +103,6 @@ internal class LocalTorrentHttp private constructor(
 
     // The piece-aware data source validates the original local file URI, not our HTTP endpoint.
     private fun DataSpec.copyUriForTorrent(): DataSpec = buildUpon().setUri(sourceUri).build()
-    private lateinit var sourceUri: Uri
 
     private fun reply(socket: Socket, code: Int, reason: String) {
         val msg = "HTTP/1.1 $code $reason\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -120,9 +120,7 @@ internal class LocalTorrentHttp private constructor(
         fun start(source: TorrentPlayback): LocalTorrentHttp {
             val socket = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
             return try {
-                LocalTorrentHttp(socket, source.dataSourceFactory(), source.contentLength).also {
-                    it.sourceUri = Uri.parse(source.uri)
-                }
+                LocalTorrentHttp(socket, source.dataSourceFactory(), source.contentLength, Uri.parse(source.uri))
             } catch (failure: Throwable) {
                 socket.close()
                 throw failure
