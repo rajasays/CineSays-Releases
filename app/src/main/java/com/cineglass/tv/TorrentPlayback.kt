@@ -49,6 +49,8 @@ class TorrentPlayback private constructor(
     private val pieceLength: Int,
 ) {
     private val closed = AtomicBoolean()
+    @Volatile internal var lastPieceTimeoutAtMs = -1L
+        private set
     val uri: String = Uri.fromFile(file).toString()
     val contentLength: Long get() = fileSize
     private var loopback: LocalTorrentHttp? = null
@@ -196,6 +198,7 @@ class TorrentPlayback private constructor(
                 Log.i("CineSaysTorrent", "piece_wait_extended piece=$piece waitedMs=${now - startedAt} maxWaitMs=60000")
             }
             if (budget.expired(now)) {
+                lastPieceTimeoutAtMs = now
                 Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt} progressAware=true")
                 throw IOException("Timed out waiting for required torrent piece")
             }

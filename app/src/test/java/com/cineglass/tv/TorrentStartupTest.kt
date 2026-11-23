@@ -146,4 +146,29 @@ class TorrentStartupTest {
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
         assertTrue(TorrentRules.readWindow(10, 9).isEmpty())
     }
+    @Test fun restartedPieceCanExtendWaitEvenBelowPreviousHighWaterMark() {
+        val budget = TorrentPieceWaitBudget(0)
+        budget.observe(6_000, 131)
+        budget.observe(12_000, 1)
+        assertTrue(budget.expired(25_000)) // A reset alone is not progress.
+        val restarted = TorrentPieceWaitBudget(0)
+        restarted.observe(6_000, 131)
+        restarted.observe(12_000, 1)
+        restarted.observe(22_000, 121)
+        assertFalse(restarted.expired(25_000))
+        assertTrue(restarted.expired(32_000))
+    }
+
+    @Test fun seekRetryRequiresRecentTimeoutAfterSeekAndIsBounded() {
+        val retry = TorrentSeekRetry()
+        assertFalse(retry.claim(30_000, 29_000))
+        retry.begin(30_000)
+        assertFalse(retry.claim(31_000, 29_000))
+        assertFalse(retry.claim(56_000, 50_000))
+        assertTrue(retry.claim(56_001, 56_000))
+        assertFalse(retry.claim(57_000, 56_000))
+        retry.clear()
+        assertFalse(retry.claim(57_000, 56_000))
+    }
+
 }

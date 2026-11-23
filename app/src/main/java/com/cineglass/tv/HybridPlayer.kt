@@ -134,9 +134,17 @@ fun NativePlayerScreen(
         val playerObservedAt = SystemClock.elapsedRealtime()
         var firstFrameLogged = false
         var bufferingStartedAt = 0L
+        val seekRetry = TorrentSeekRetry()
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
+                val timeoutAt = playback.torrent?.lastPieceTimeoutAtMs
+                if (e.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED &&
+                    timeoutAt != null && seekRetry.claim(SystemClock.elapsedRealtime(), timeoutAt)) {
+                    Log.i("CineSaysTorrent", "seek_retry_after_piece_timeout positionMs=${player.currentPosition}")
+                    player.prepare()
+                    return
+                }
                 error = describePlaybackError(e); report()
             }
             override fun onRenderedFirstFrame() {
@@ -153,12 +161,14 @@ fun NativePlayerScreen(
                 reason: Int
             ) {
                 if (torrentDiagnostics && reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    seekRetry.begin(SystemClock.elapsedRealtime())
                     Log.i("CineSaysTorrent", "timing_seek fromMs=${oldPosition.positionMs} targetMs=${newPosition.positionMs}")
                 }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE
+                if (state == Player.STATE_READY || state == Player.STATE_ENDED) seekRetry.clear()
                 if (torrentDiagnostics) {
                     val now = SystemClock.elapsedRealtime()
                     if (state == Player.STATE_BUFFERING) {

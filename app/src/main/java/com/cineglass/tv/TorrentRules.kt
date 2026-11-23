@@ -89,29 +89,53 @@ internal object TorrentRules {
 
 /**
  * An incomplete requested piece can take longer than 25 seconds even when
- * blocks keep arriving. Extend only on verified block progress. Never extend
+ * blocks keep arriving. Extend only when the required piece receives blocks. Never extend
  * if no blocks have arrived within the last 10 seconds or beyond 60 seconds.
  * Inputs are monotonic elapsed realtime milliseconds.
  */
 internal class TorrentPieceWaitBudget(private val startedAtMs: Long) {
-    private var bestFinishedBlocks = 0
+    private var previousFinishedBlocks = 0
+    private var sawProgress = false
     private var lastProgressAtMs = startedAtMs
 
     fun observe(nowMs: Long, finishedBlocks: Int) {
-        if (finishedBlocks > bestFinishedBlocks) {
-            bestFinishedBlocks = finishedBlocks
+        // A native piece can be retried from scratch. Compare with the last
+        // observation so new work counts even below the old high-water mark.
+        if (finishedBlocks > previousFinishedBlocks) {
+            sawProgress = true
             lastProgressAtMs = nowMs
         }
+        previousFinishedBlocks = finishedBlocks
     }
 
     fun expired(nowMs: Long): Boolean {
         val elapsed = nowMs - startedAtMs
         if (elapsed < 25_000) return false
-        return elapsed >= TorrentTransportPolicy.MAX_PIECE_WAIT_MS || bestFinishedBlocks == 0 ||
+        return elapsed >= TorrentTransportPolicy.MAX_PIECE_WAIT_MS || !sawProgress ||
             nowMs - lastProgressAtMs >= 10_000
     }
 
     fun extended(nowMs: Long): Boolean = nowMs - startedAtMs >= 25_000 && !expired(nowMs)
+}
+
+/** One retry after a read timeout followed by a parser failure during the same seek. */
+internal class TorrentSeekRetry {
+    private var seekAtMs: Long? = null
+    private var retried = false
+
+    fun begin(nowMs: Long) {
+        seekAtMs = nowMs
+        retried = false
+    }
+
+    fun claim(nowMs: Long, timeoutAtMs: Long): Boolean {
+        val start = seekAtMs ?: return false
+        if (retried || timeoutAtMs < start || nowMs - timeoutAtMs !in 0L..5_000L) return false
+        retried = true
+        return true
+    }
+
+    fun clear() { seekAtMs = null }
 }
 
 /**
