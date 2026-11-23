@@ -1,3 +1,12 @@
+## Unreleased — Torrent read lifecycle and loading (2026-11-23)
+
+- Schedule bounded piece windows for every active byte range, including resume/index reads; remove abandoned deadlines and elevated priorities.
+- Cancel disconnected HTTP readers during missing-piece waits; bound loopback workers and close all sockets on shutdown.
+- Align local HTTP read timeout with the 60-second progress-aware piece budget; remove the additional startup warmup wait.
+- Show the selected title and available poster during preparation and torrent buffering.
+- Add concurrent selection/socket tests and an opt-in tracker-free native torrent test. See `docs/TORRENT-STREAMING-INVESTIGATION.md` and `docs/TORRENT-VALIDATION.md` for evidence and release gates.
+- Android TV playback validation remains required. No version bump, merge or release publication.
+
 ## CineSays 1.8.7 — Free streaming update (2026-11-23)
 
 - Prioritize playable direct HLS, DASH, and MP4 sources in Watch Now.

@@ -115,6 +115,8 @@ fun NativePlayerScreen(
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     var error by remember(playback.url) { mutableStateOf<String?>(null) }
     var ended by remember(playback.url) { mutableStateOf(false) }
+    var loading by remember(playback.url) { mutableStateOf(true) }
+    var firstFrameRendered by remember(playback.url) { mutableStateOf(false) }
     var picker by remember { mutableStateOf<Int?>(null) } // C.TRACK_TYPE_* or SPEED
     var seekHint by remember { mutableStateOf<String?>(null) }
 
@@ -131,7 +133,9 @@ fun NativePlayerScreen(
                 if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
                 error = describePlaybackError(e); report()
             }
+            override fun onRenderedFirstFrame() { firstFrameRendered = true }
             override fun onPlaybackStateChanged(state: Int) {
+                loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE
                 if (torrentDiagnostics) {
                     val now = SystemClock.elapsedRealtime()
                     if (state == Player.STATE_BUFFERING) {
@@ -146,6 +150,7 @@ fun NativePlayerScreen(
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) report() } // pause / stop
         }
+        loading = player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_IDLE
         player.addListener(listener)
         onDispose { report(); player.removeListener(listener); player.release() } // one player at a time, always released
     }
@@ -209,7 +214,7 @@ fun NativePlayerScreen(
                     this.player = player
                     useController = true
                     controllerShowTimeoutMs = 4000
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShowBuffering(if (playback.torrent != null) PlayerView.SHOW_BUFFERING_NEVER else PlayerView.SHOW_BUFFERING_ALWAYS)
                     // One settings menu (CineSays' ⚙ in the header), so the controller's own gear and CC button are hidden.
                     setShowSubtitleButton(false)
                     findViewById<android.view.View>(androidx.media3.ui.R.id.exo_settings)?.visibility = android.view.View.GONE
@@ -252,6 +257,12 @@ fun NativePlayerScreen(
                 .focusable())
             seekHint?.let { Text(it, color = Cs.text, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .6f), RoundedCornerShape(12.dp)).padding(horizontal = 18.dp, vertical = 10.dp)) }
+
+            if (playback.torrent != null && loading && error == null && !ended) {
+                TorrentLoadingCard(playback.title, playback.record.poster,
+                    if (firstFrameRendered) "Buffering video…" else "Loading stream…",
+                    modifier = Modifier.align(Alignment.Center))
+            }
 
             if (slowStart && error == null) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp).widthIn(max = 640.dp)
                 .background(Cs.panel.copy(alpha = .92f), RoundedCornerShape(16.dp)).border(1.dp, Cs.line, RoundedCornerShape(16.dp)).padding(18.dp),
@@ -435,6 +446,27 @@ private fun FullScreenPlayback() {
 }
 
 
+/** Shared preparation/player loading view. Artwork is optional and never blocks playback. */
+@Composable
+internal fun TorrentLoadingCard(title: String, poster: String?, status: String,
+    modifier: Modifier = Modifier) {
+    Column(modifier.widthIn(max = 440.dp).background(Color.Black.copy(alpha = .88f), RoundedCornerShape(20.dp))
+        .padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        poster?.takeIf { it.isNotBlank() }?.let { path ->
+            AsyncImage(model = if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/w342$path",
+                contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.size(112.dp, 168.dp).clip(RoundedCornerShape(10.dp)))
+        }
+        Text(title, color = Cs.text, fontSize = 21.sp, fontWeight = FontWeight.Bold,
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
+            Text(status, color = Cs.textSoft, fontSize = 14.sp)
+        }
+    }
+}
+
 @Composable
 private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier.widthIn(max = 560.dp).padding(24.dp).background(Cs.panel.copy(alpha = .94f), RoundedCornerShape(20.dp))
@@ -444,7 +476,7 @@ private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.(
 @OptIn(UnstableApi::class)
 private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPrefs): ExoPlayer {
     val http = DefaultHttpDataSource.Factory().setUserAgent("CineSays/${BuildConfig.VERSION_NAME} (Android TV)")
-        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) 40_000 else 15_000)
+        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) TorrentTransportPolicy.HTTP_READ_TIMEOUT_MS else 15_000)
     val load = if (prefs.buffering == "large") DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 120_000, 2_500, 6_000).build()
         else DefaultLoadControl()
     val player = ExoPlayer.Builder(context)

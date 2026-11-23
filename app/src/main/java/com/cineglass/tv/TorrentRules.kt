@@ -39,12 +39,12 @@ internal object TorrentRules {
      * Keep roughly 8 MiB of verified pieces scheduled ahead of the current read.
      * Torrent piece sizes vary substantially between sources; a fixed four-piece
      * window can represent less than one second of high-bitrate video.
-     * Bound the window to 4..16 pieces so a slow peer swarm is not overwhelmed.
+     * Bound the window to 2..16 pieces so a slow peer swarm is not overwhelmed.
      */
     fun adaptiveReadWindow(first: Int, last: Int, pieceLength: Int): List<Int> {
         if (first < 0 || last < first || pieceLength <= 0) return emptyList()
         val targetBytes = 8L * 1024 * 1024
-        val desired = ((targetBytes + pieceLength - 1) / pieceLength).coerceIn(4L, 16L)
+        val desired = ((targetBytes + pieceLength - 1) / pieceLength).coerceIn(2L, 16L)
         return (first.toLong()..minOf(first.toLong() + desired - 1, last.toLong()))
             .map { it.toInt() }
     }
@@ -107,7 +107,7 @@ internal class TorrentPieceWaitBudget(private val startedAtMs: Long) {
     fun expired(nowMs: Long): Boolean {
         val elapsed = nowMs - startedAtMs
         if (elapsed < 25_000) return false
-        return elapsed >= 60_000 || bestFinishedBlocks == 0 ||
+        return elapsed >= TorrentTransportPolicy.MAX_PIECE_WAIT_MS || bestFinishedBlocks == 0 ||
             nowMs - lastProgressAtMs >= 10_000
     }
 

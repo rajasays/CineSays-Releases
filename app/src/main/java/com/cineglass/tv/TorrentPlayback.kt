@@ -64,16 +64,16 @@ class TorrentPlayback private constructor(
         }
     }
 
-    private val priorityOwners = TorrentPriorityOwners()
+    private val readDemands = TorrentReadDemands(pieceLength)
     private val nextReaderId = AtomicInteger(1)
-    private var priorityWindow: Set<Int> = emptySet()
-    private val auxiliaryDeadlinePieces = HashMap<Int, Int>()
+    private val selection = TorrentPieceSelection(handle::havePiece,
+        { piece, deadline -> handle.setPieceDeadline(piece, deadline) },
+        { piece -> handle.resetPieceDeadline(piece); handle.piecePriority(piece, Priority.IGNORE) })
     private var lastReadyAheadLog = 0L
     private var requestedPiece = -1
     private val firstFilePiece = (fileOffset / pieceLength).toInt()
     private val lastFilePiece = ((fileOffset + fileSize - 1) / pieceLength).toInt()
     private var lastPeerDiagnosticsAt = 0L
-    private val startupWarmupUsed = AtomicBoolean(false)
     /** Snapshot for the player warning; does not change torrent priorities or playback. */
     @Synchronized fun sourceHealth(bufferedSeconds: Int): String {
         if (closed.get()) return "This torrent session has ended."
@@ -113,119 +113,53 @@ class TorrentPlayback private constructor(
             Log.i("CineSaysTorrent", "piece_diagnostic piece=$waitingPiece state=$state advertisedPeers=${advertised ?: -1} priority=${actualPriority.name} " +
                 "finishedBlocks=${partial?.finished() ?: -1} writingBlocks=${partial?.writing() ?: -1} " +
                 "requestedBlocks=${partial?.requested() ?: -1} totalBlocks=${partial?.blocksInPiece() ?: -1} " +
-                "queueEntries=${queue.size}")
+                "queueEntries=${queue.size} queuePieces=${queue.take(12).joinToString(",") { it.pieceIndex().toString() }}")
+            val peers = handle.peerInfo()
+            val unchoked = peers.count { it.flags() and com.frostwire.jlibtorrent.swig.peer_info.remote_choked.to_int() == 0 }
+            val interested = peers.count { it.flags() and com.frostwire.jlibtorrent.swig.peer_info.interesting.to_int() != 0 }
+            val snubbed = peers.count { it.flags() and com.frostwire.jlibtorrent.swig.peer_info.snubbed.to_int() != 0 }
+            Log.i("CineSaysTorrent", "peer_eligibility connected=${peers.size} unchoked=$unchoked interested=$interested snubbed=$snubbed")
         }.onFailure { Log.w("CineSaysTorrent", "peer_diagnostics unavailable: ${it.javaClass.simpleName}") }
     }
 
-    @Synchronized private fun registerReader(readerId: Int, piece: Int) {
-        val metadataOnly = TorrentRules.isMetadataTailRange(piece, firstFilePiece, lastFilePiece)
-        priorityOwners.enter(readerId, eligible = !metadataOnly)
-        if (metadataOnly) Log.i("CineSaysTorrent", "metadata_reader piece=$piece excludedFromPlaybackOwner=true")
-    }
-
     @Synchronized private fun releaseReader(readerId: Int) {
-        val wasPrimary = priorityOwners.leave(readerId)
-        auxiliaryDeadlinePieces.remove(readerId)?.let { old ->
-            if (old !in priorityWindow) runCatching { handle.resetPieceDeadline(old) }
-        }
-        if (wasPrimary) {
-            // A seek can close the old HTTP reader while another range request
-            // is already waiting. Allow the new owner to rebuild its window.
-            requestedPiece = -1
-            Log.i("CineSaysTorrent", "priority_handoff ownerActive=${priorityOwners.primary != null}")
-        }
+        applyDemands(readDemands.remove(readerId))
     }
 
-    @Synchronized private fun prioritizeRead(piece: Int, readerId: Int) {
-        // Resume and remote seeking may open a far-away HTTP range while the
-        // initial reader still holds playback ownership. Promote the new range
-        // immediately; metadata tail probes remain excluded. Superseded readers
-        // cannot steal priority back during their own cancellation/cleanup.
-        if (!priorityOwners.isPrimary(readerId) &&
-            priorityOwners.canPromote(readerId) &&
-            TorrentRules.isSeekJump(piece, requestedPiece, firstFilePiece, lastFilePiece) &&
-            priorityOwners.promote(readerId)) {
-            Log.i("CineSaysTorrent", "seek_handoff fromPiece=$requestedPiece toPiece=$piece")
-            requestedPiece = -1
-        }
-        if (!priorityOwners.isPrimary(readerId)) {
-            // Metadata probes and overlapping HTTP requests must not reset the
-            // sequential playback window. Allow one urgent piece per auxiliary
-            // reader so MP4/MKV index lookups and seeks can still progress.
-            val previous = auxiliaryDeadlinePieces[readerId]
-            if (previous != piece) {
-                if (previous != null && previous !in priorityWindow) {
-                    runCatching { handle.resetPieceDeadline(previous) }
-                }
-                auxiliaryDeadlinePieces[readerId] = piece
-                if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, 125)
-                Log.i("CineSaysTorrent", "auxiliary_piece piece=$piece playbackPiece=$requestedPiece")
-            }
-            return
-        }
-        if (TorrentRules.isTailProbe(piece, firstFilePiece, lastFilePiece, requestedPiece)) {
-            if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, 0)
-            Log.i("CineSaysTorrent", "tail_probe piece=$piece playbackPiece=$requestedPiece")
-            return
-        }
-        if (requestedPiece == piece) return
-        val next = TorrentRules.adaptiveReadWindow(piece, lastFilePiece, pieceLength).toSet()
-        (priorityWindow - next).forEach { old ->
-            if (old !in auxiliaryDeadlinePieces.values) runCatching { handle.resetPieceDeadline(old) }
-        }
-        next.forEach { index ->
-            if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 125)
-        }
-        priorityWindow = next
+    @Synchronized private fun prioritizeRead(piece: Int, readerId: Int, last: Int) {
+        if (closed.get()) throw IOException("Torrent session closed")
+        applyDemands(readDemands.update(readerId, piece, last))
         requestedPiece = piece
         val now = SystemClock.elapsedRealtime()
         if (now - lastReadyAheadLog >= 5_000) {
             lastReadyAheadLog = now
-            val contiguous = next.takeWhile { handle.havePiece(it) }.size
-            Log.i("CineSaysTorrent", "ready_ahead anchor=$piece consecutivePieces=$contiguous windowPieces=${next.size} consecutiveKiB=${(contiguous.toLong() * pieceLength) / 1024}")
+            Log.i("CineSaysTorrent", "read_demand anchor=$piece activePieces=${selection.pieces.size}")
         }
     }
 
-    private fun warmupNextPiece(position: Long) {
-        // Bounded warmup on the first forward read reduces the chance of
-        // starting the decoder with one piece and immediately rebuffering.
-        if (position != 0L || !startupWarmupUsed.compareAndSet(false, true)) return
-        val next = TorrentRules.startupWarmupPieces(firstFilePiece, lastFilePiece).getOrNull(1) ?: return
-        val startedAt = SystemClock.elapsedRealtime()
-        while (!closed.get() && !handle.havePiece(next) &&
-            SystemClock.elapsedRealtime() - startedAt < 1_200) {
-            try {
-                Thread.sleep(100)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
-        }
-        Log.i("CineSaysTorrent", "startup_warmup nextReady=${handle.havePiece(next)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}")
+    /** Only live selections are eligible. Removing a deadline alone leaves priority 7 behind. */
+    private fun applyDemands(deadlines: Map<Int, Int>) {
+        if (closed.get()) return
+        selection.apply(deadlines)
     }
 
-    private fun waitForPiece(piece: Int, readerId: Int) {
+    private fun waitForPiece(piece: Int, readerId: Int, last: Int, cancellation: TorrentReadCancellation?) {
         if (closed.get()) throw IOException("Torrent session closed")
         // Maintain look-ahead even when the requested piece is already available.
-        prioritizeRead(piece, readerId)
+        if (cancellation?.isCancelled() == true) throw IOException("Torrent read cancelled")
+        prioritizeRead(piece, readerId, last)
         if (handle.havePiece(piece)) return
         val startedAt = SystemClock.elapsedRealtime()
         val budget = TorrentPieceWaitBudget(startedAt)
         var nextProgressCheckAt = startedAt + 2_000
-        var nextPriorityUpdateAt = startedAt + 500
-        var nextStalledPieceRefreshAt = startedAt + 5_000
         var reportedExtension = false
         while (!closed.get()) {
+            if (cancellation?.isCancelled() == true) throw IOException("Torrent read cancelled")
             val now = SystemClock.elapsedRealtime()
             if (handle.havePiece(piece)) {
                 val waited = now - startedAt
                 if (waited >= 500) Log.i("CineSaysTorrent", "piece_ready piece=$piece waitMs=$waited")
                 return
-            }
-            if (now >= nextPriorityUpdateAt) {
-                // Re-evaluate ownership after Media3 closes a stalled HTTP reader.
-                prioritizeRead(piece, readerId)
-                nextPriorityUpdateAt = now + 500
             }
             if (now - startedAt >= 2_000) logPeerDiagnostics(now, piece)
             if (now >= nextProgressCheckAt) {
@@ -244,18 +178,6 @@ class TorrentPlayback private constructor(
                 reportedExtension = true
                 Log.i("CineSaysTorrent", "piece_wait_extended piece=$piece waitedMs=${now - startedAt} maxWaitMs=60000")
             }
-            if (now >= nextStalledPieceRefreshAt) {
-                // A piece can be starved by the swarm even while unrelated
-                // torrent data downloads. Refresh only this missing piece's
-                // deadline; don't reset the playback window or other readers.
-                synchronized(this) {
-                    if (!closed.get() && !handle.havePiece(piece)) {
-                        handle.setPieceDeadline(piece, 0)
-                        Log.i("CineSaysTorrent", "piece_reprioritized piece=$piece waitedMs=${now - startedAt}")
-                    }
-                }
-                nextStalledPieceRefreshAt = now + 5_000
-            }
             if (budget.expired(now)) {
                 Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt} progressAware=true")
                 throw IOException("Timed out waiting for required torrent piece")
@@ -273,6 +195,8 @@ class TorrentPlayback private constructor(
     private inner class TorrentDataSource : BaseDataSource(true) {
         private val readerId = nextReaderId.getAndIncrement()
         private var registered = false
+        private var lastReadPiece = 0
+        private var cancellation: TorrentReadCancellation? = null
         private var input: RandomAccessFile? = null
         private var requestUri: Uri? = null
         private var position = 0L
@@ -287,13 +211,12 @@ class TorrentPlayback private constructor(
             position = dataSpec.position
             remaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) fileSize - position
                 else minOf(dataSpec.length, fileSize - position)
-            val openingPiece = ((fileOffset + position.coerceAtMost((fileSize - 1).coerceAtLeast(0))) / pieceLength).toInt()
-            registerReader(readerId, openingPiece)
+            cancellation = dataSpec.customData as? TorrentReadCancellation
+            lastReadPiece = ((fileOffset + (position + remaining - 1).coerceAtLeast(position)) / pieceLength).toInt()
             registered = true
             try {
                 if (remaining > 0) {
-                    waitForPiece(((fileOffset + position) / pieceLength).toInt(), readerId)
-                    warmupNextPiece(position)
+                    waitForPiece(((fileOffset + position) / pieceLength).toInt(), readerId, lastReadPiece, cancellation)
                 }
                 input = RandomAccessFile(file, "r").also { it.seek(position) }
                 requestUri = dataSpec.uri
@@ -311,7 +234,7 @@ class TorrentPlayback private constructor(
             if (length == 0) return 0
             if (remaining == 0L) return C.RESULT_END_OF_INPUT
             val absolute = fileOffset + position
-            waitForPiece((absolute / pieceLength).toInt(), readerId)
+            waitForPiece((absolute / pieceLength).toInt(), readerId, lastReadPiece, cancellation)
             val count = minOf(length.toLong(), remaining, pieceLength - absolute % pieceLength).toInt()
             val bytes = input?.read(buffer, offset, count) ?: -1
             if (bytes <= 0) throw IOException("Torrent piece could not be read")
@@ -409,20 +332,42 @@ class TorrentPlayback private constructor(
                         if (!TorrentRules.hasSpace(size, directory.usableSpace, info.pieceLength())) {
                             throw TorrentPreparationException("Not enough free device storage for this video. Choose a smaller source or free some space.")
                         }
-                        handle.prioritizeFiles(Array(info.numFiles()) { if (it == index) Priority.NORMAL else Priority.IGNORE })
+                        // File priorities control storage mapping; wait for that disk round-trip
+                        // before overriding piece priorities, which file updates can reset.
+                        val prioritiesReady = AtomicBoolean(false)
+                        val priorityListener = object : com.frostwire.jlibtorrent.AlertListener {
+                            override fun types() = intArrayOf(com.frostwire.jlibtorrent.alerts.AlertType.FILE_PRIO.swig())
+                            override fun alert(alert: com.frostwire.jlibtorrent.alerts.Alert<*>) {
+                                if (alert is com.frostwire.jlibtorrent.alerts.FilePrioAlert) prioritiesReady.set(true)
+                            }
+                        }
+                        session.addListener(priorityListener)
+                        try {
+                            handle.prioritizeFiles(Array(info.numFiles()) { if (it == index) Priority.NORMAL else Priority.IGNORE })
+                            val waitStarted = SystemClock.elapsedRealtime()
+                            while (!prioritiesReady.get()) {
+                                currentCoroutineContext().ensureActive()
+                                if (SystemClock.elapsedRealtime() - waitStarted >= 10_000)
+                                    throw TorrentPreparationException("The torrent storage could not be prepared. Try again or choose another source.")
+                                delay(50)
+                            }
+                        } finally {
+                            session.removeListener(priorityListener)
+                        }
+                        handle.prioritizePieces(Array(info.numPieces()) { Priority.IGNORE })
                         // A fixed sequential picker competes with Media3 seeks and
                         // our explicit, sliding piece deadlines. Let the deadline
                         // window control streaming while keeping the selected-file
                         // priorities unchanged.
                         handle.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
                         handle.unsetFlags(TorrentFlags.UPLOAD_MODE)
-                        Log.i("CineSaysTorrent", "scheduler_mode deadline_window sequential=false")
-                        // Start headers and a possible end-of-file MP4 index concurrently.
-                        val firstPiece = (files.fileOffset(index) / info.pieceLength()).toInt()
-                        val lastPiece = ((files.fileOffset(index) + size - 1) / info.pieceLength()).toInt()
-                        TorrentRules.startupPieces(firstPiece, lastPiece).forEachIndexed { order, piece ->
-                            if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, order * 250)
-                        }
+                        // This single playback session is driven by live read demand,
+                        // not the automatic download/seed queue when all pieces are filtered.
+                        handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                        handle.resume()
+                        Log.i("CineSaysTorrent", "scheduler_mode live_read_demands sequential=false")
+                        // Readers schedule headers, indexes and resume positions on demand.
+                        // Do not leave startup deadlines competing with a later seek.
                         return TorrentPlayback(session, directory, handle, path, size, files.fileOffset(index), info.pieceLength())
                     }
                     delay(200)

@@ -464,11 +464,9 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         }
     }
     if (streamState.preparing) Dialog(onDismissRequest = streaming::cancelSourcePreparation) {
-        Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
-            Text("Getting the video ready…", color = Cs.text)
-        }
+        val preparingTitle = streamState.watchNow?.selected
+        TorrentLoadingCard(preparingTitle?.title ?: "CineSays",
+            preparingTitle?.poster ?: streamState.watchNow?.item?.poster, "Getting the video ready…")
     }
     if (state.playerBusy) Dialog(onDismissRequest = vm::closePlayer) {
         Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,

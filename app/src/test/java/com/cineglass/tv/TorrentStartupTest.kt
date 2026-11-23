@@ -15,7 +15,8 @@ class TorrentStartupTest {
         // 2 MiB pieces need only four scheduled pieces.
         assertEquals((10..13).toList(), TorrentRules.adaptiveReadWindow(10, 100, 2 * 1024 * 1024))
         // Even large pieces retain a minimum near-term look-ahead.
-        assertEquals((10..13).toList(), TorrentRules.adaptiveReadWindow(10, 100, 4 * 1024 * 1024))
+        assertEquals((10..11).toList(), TorrentRules.adaptiveReadWindow(10, 100, 4 * 1024 * 1024))
+        assertEquals((10..11).toList(), TorrentRules.adaptiveReadWindow(10, 100, 8 * 1024 * 1024))
         assertEquals(listOf(98, 99), TorrentRules.adaptiveReadWindow(98, 99, 256 * 1024))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.adaptiveReadWindow(Int.MAX_VALUE, Int.MAX_VALUE, 256 * 1024))
         assertTrue(TorrentRules.adaptiveReadWindow(10, 9, 256 * 1024).isEmpty())
