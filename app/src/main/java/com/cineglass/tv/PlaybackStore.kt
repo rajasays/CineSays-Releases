@@ -172,6 +172,12 @@ data class PlaybackPrefs(
     /** "ask", "always", "never". */
     val resume: String = "ask",
     val destination: PlaybackDestination = PlaybackDestination.ASK,
+    /** Search on opening the Watch Now title/episode picker. */
+    val discovery: String = "onTitle",
+    /** Direct HLS/MP4/DASH first; a torrent remains available in Other Sources. */
+    val preferredSource: String = "direct",
+    val progressiveTorrentStreaming: Boolean = true,
+    val authorizedTorrentToHttpPlayback: Boolean = true,
     /** "standard" or "large" (more buffer for unsteady connections). */
     val buffering: String = "standard",
     /** 0.80 – 0.95: how far in a title counts as watched. */
@@ -192,6 +198,10 @@ data class PlaybackPrefs(
                 resume = p.getString("resume", "ask")!!,
                 destination = runCatching { PlaybackDestination.valueOf(p.getString("destination", "ASK")!!) }.getOrDefault(PlaybackDestination.ASK),
                 buffering = p.getString("buffering", "standard")!!,
+                discovery = p.getString("discovery", "onTitle")!!,
+                preferredSource = p.getString("preferred_source", "direct")!!,
+                progressiveTorrentStreaming = p.getBoolean("progressive_torrent", true),
+                authorizedTorrentToHttpPlayback = p.getBoolean("authorized_torrent_http", true),
                 // Stored as a float; round back to whole percent (0.9f reads as 0.8999…).
                 completeAt = Math.round(p.getFloat("complete_at", ProgressRules.DEFAULT_THRESHOLD.toFloat()) * 100) / 100.0
             )
@@ -201,6 +211,9 @@ data class PlaybackPrefs(
                 .putString("quality", v.quality).putString("audio", v.audioLanguage).putString("sub_lang", v.subtitleLanguage)
                 .putString("sub_mode", v.subtitleMode).putFloat("sub_scale", v.subtitleScale).putString("resume", v.resume)
                 .putString("destination", v.destination.name).putString("buffering", v.buffering)
+                .putString("discovery", v.discovery).putString("preferred_source", v.preferredSource)
+                .putBoolean("progressive_torrent", v.progressiveTorrentStreaming)
+                .putBoolean("authorized_torrent_http", v.authorizedTorrentToHttpPlayback)
                 .putFloat("complete_at", v.completeAt.toFloat()).apply()
         }
     }
