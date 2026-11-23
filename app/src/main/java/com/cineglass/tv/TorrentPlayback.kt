@@ -199,9 +199,11 @@ class TorrentPlayback private constructor(
         prioritizeRead(piece, readerId)
         if (handle.havePiece(piece)) return
         val startedAt = SystemClock.elapsedRealtime()
-        val end = startedAt + 25_000
+        val budget = TorrentPieceWaitBudget(startedAt)
+        var nextProgressCheckAt = startedAt + 2_000
         var nextPriorityUpdateAt = startedAt + 500
         var nextStalledPieceRefreshAt = startedAt + 5_000
+        var reportedExtension = false
         while (!closed.get()) {
             val now = SystemClock.elapsedRealtime()
             if (handle.havePiece(piece)) {
@@ -215,6 +217,22 @@ class TorrentPlayback private constructor(
                 nextPriorityUpdateAt = now + 500
             }
             if (now - startedAt >= 2_000) logPeerDiagnostics(now, piece)
+            if (now >= nextProgressCheckAt) {
+                // Only real downloaded blocks may extend a wait. The overall
+                // torrent download rate may reflect unrelated pieces.
+                runCatching {
+                    val finished = handle.getDownloadQueue()
+                        .firstOrNull { it.pieceIndex() == piece }?.finished() ?: 0
+                    budget.observe(now, finished)
+                }.onFailure {
+                    Log.w("CineSaysTorrent", "piece_progress unavailable: ${it.javaClass.simpleName}")
+                }
+                nextProgressCheckAt = now + 2_000
+            }
+            if (!reportedExtension && budget.extended(now)) {
+                reportedExtension = true
+                Log.i("CineSaysTorrent", "piece_wait_extended piece=$piece waitedMs=${now - startedAt} maxWaitMs=60000")
+            }
             if (now >= nextStalledPieceRefreshAt) {
                 // A piece can be starved by the swarm even while unrelated
                 // torrent data downloads. Refresh only this missing piece's
@@ -227,9 +245,9 @@ class TorrentPlayback private constructor(
                 }
                 nextStalledPieceRefreshAt = now + 5_000
             }
-            if (now >= end) {
-                Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt}")
-                throw IOException("Timed out waiting for torrent peers")
+            if (budget.expired(now)) {
+                Log.w("CineSaysTorrent", "piece_timeout piece=$piece waitMs=${now - startedAt} progressAware=true")
+                throw IOException("Timed out waiting for required torrent piece")
             }
             try {
                 Thread.sleep(100)
