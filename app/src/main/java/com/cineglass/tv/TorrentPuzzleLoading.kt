@@ -38,54 +38,54 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
     val ready = painter.state is AsyncImagePainter.State.Success
     val assembly = remember(artworkUrl) { Animatable(0f) }
     LaunchedEffect(artworkUrl, ready) {
-        if (ready) {
-            assembly.snapTo(0f)
-            assembly.animateTo(1f, tween(2400))
-        }
+        assembly.snapTo(0f)
+        assembly.animateTo(1f, tween(2400))
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF090E19))) {
-        if (ready) {
-            Box(Modifier.fillMaxSize().drawWithCache {
-                val columns = if (size.width > size.height) 5 else 3
-                val rows = if (columns == 5) 3 else 5
-                val width = size.width / columns
-                val height = size.height / rows
-                val pieces = List(columns * rows) { index ->
-                    val col = index % columns
-                    val row = index / columns
-                    puzzlePiece(col, row, columns, rows, width, height)
-                }
-                val artwork = painter.intrinsicSize
-                val scale = if (artwork.width > 0f && artwork.height > 0f &&
-                    artwork.width.isFinite() && artwork.height.isFinite())
-                    maxOf(size.width / artwork.width, size.height / artwork.height) else 0f
-                val imageSize = if (scale > 0f) Size(artwork.width * scale, artwork.height * scale) else size
-                val imageX = (size.width - imageSize.width) / 2f
-                val imageY = (size.height - imageSize.height) / 2f
-                onDrawBehind {
-                    val time = assembly.value
-                    pieces.forEachIndexed { index, path ->
-                        val progress = FastOutSlowInEasing.transform(
-                            ((time - index * .039f) / .44f).coerceIn(0f, 1f)
-                        )
-                        if (progress > 0f) {
-                            val x = if (index % 2 == 0) -.48f * width else .48f * width
-                            val y = if (index % 3 == 0) -.45f * height else .45f * height
-                            translate(x * (1f - progress), y * (1f - progress)) {
-                                clipPath(path) {
+        Box(Modifier.fillMaxSize().drawWithCache {
+            val columns = if (size.width > size.height) 5 else 3
+            val rows = if (columns == 5) 3 else 5
+            val width = size.width / columns
+            val height = size.height / rows
+            val pieces = List(columns * rows) { index ->
+                val col = index % columns
+                val row = index / columns
+                puzzlePiece(col, row, columns, rows, width, height)
+            }
+            val artwork = painter.intrinsicSize
+            val scale = if (artwork.width > 0f && artwork.height > 0f &&
+                artwork.width.isFinite() && artwork.height.isFinite())
+                maxOf(size.width / artwork.width, size.height / artwork.height) else 0f
+            val imageSize = if (scale > 0f) Size(artwork.width * scale, artwork.height * scale) else size
+            val imageX = (size.width - imageSize.width) / 2f
+            val imageY = (size.height - imageSize.height) / 2f
+            onDrawBehind {
+                val time = assembly.value
+                pieces.forEachIndexed { index, path ->
+                    val progress = FastOutSlowInEasing.transform(
+                        ((time - index * .039f) / .44f).coerceIn(0f, 1f)
+                    )
+                    if (progress > 0f) {
+                        val x = if (index % 2 == 0) -.48f * width else .48f * width
+                        val y = if (index % 3 == 0) -.45f * height else .45f * height
+                        translate(x * (1f - progress), y * (1f - progress)) {
+                            clipPath(path) {
+                                if (ready) {
                                     translate(imageX, imageY) {
                                         with(painter) { draw(imageSize, alpha = progress) }
                                     }
+                                } else {
+                                    drawPath(path, Cs.accent.copy(alpha = progress * (if (index % 2 == 0) .48f else .27f)))
                                 }
-                                drawPath(path, Color(0xFF090E19).copy(alpha = .48f * progress),
-                                    style = Stroke(1.5.dp.toPx()))
                             }
+                            drawPath(path, Color(0xFF090E19).copy(alpha = .48f * progress),
+                                style = Stroke(1.5.dp.toPx()))
                         }
                     }
                 }
-            })
-        }
+            }
+        })
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
             0f to Color.Black.copy(alpha = .16f),
             .55f to Color.Black.copy(alpha = .24f),

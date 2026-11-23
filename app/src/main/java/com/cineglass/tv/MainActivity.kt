@@ -464,10 +464,20 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
                 onSubtitlePref = { lang -> streaming.updatePrefs { if (lang == null) it.copy(subtitleMode = "off") else it.copy(subtitleMode = "on", subtitleLanguage = lang) } })
         }
     }
-    if (streamState.preparing) Dialog(onDismissRequest = streaming::cancelSourcePreparation) {
-        val preparingTitle = streamState.watchNow?.selected
-        TorrentLoadingCard(preparingTitle?.title ?: "CineSays",
-            preparingTitle?.poster ?: streamState.watchNow?.item?.poster, "Getting the video ready…")
+    if (streamState.preparing) {
+        val watch = streamState.watchNow
+        val selected = watch?.selected
+        Dialog(
+            onDismissRequest = streaming::cancelSourcePreparation,
+            properties = DialogProperties(usePlatformDefaultWidth = watch == null, decorFitsSystemWindows = watch == null)
+        ) {
+            if (watch != null) {
+                TorrentPuzzleLoading(selected?.title ?: watch.item.label,
+                    selected?.poster ?: watch.item.poster, "Getting the video ready…")
+            } else {
+                TorrentLoadingCard("CineSays", null, "Getting the video ready…")
+            }
+        }
     }
     if (state.playerBusy) Dialog(onDismissRequest = vm::closePlayer) {
         Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
