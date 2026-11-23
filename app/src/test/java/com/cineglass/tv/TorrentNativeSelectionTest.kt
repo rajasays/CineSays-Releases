@@ -9,6 +9,7 @@ import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -29,7 +30,15 @@ class TorrentNativeSelectionTest {
         .setBoolean(settings_pack.bool_types.enable_upnp.swigValue(), false)
         .setBoolean(settings_pack.bool_types.enable_natpmp.swigValue(), false)
 
+    @Test(timeout = 90000) fun nativeEngineVerifiesAndReadsSelectedPieces() = exerciseSelection(localPeer = false)
+
     @Test(timeout = 90000) fun realPeerServesStartupFarResumeBackwardSeekAndTailWithFilteredPieces() {
+        assumeTrue("Use -PtorrentPeerTest=true on a host that allows native peer sockets",
+            System.getProperty("cinesays.nativeTorrentPeerTest") == "true")
+        exerciseSelection(localPeer = true)
+    }
+
+    private fun exerciseSelection(localPeer: Boolean) {
         assumeTrue("Use -PtorrentNativeJar=<matching desktop runtime jar>",
             System.getProperty("cinesays.nativeTorrentTests") == "true")
         val root = Files.createTempDirectory("cinesays-owned-torrent-").toFile()
@@ -44,28 +53,36 @@ class TorrentNativeSelectionTest {
         val seed = SessionManager()
         val leech = SessionManager()
         try {
-            seed.start(SessionParams(settings()).apply { setPosixDiskIO() })
+            val seedPort = AtomicInteger()
             leech.start(SessionParams(settings()).apply { setPosixDiskIO() })
-            seed.addListener(object : AlertListener {
-                override fun types() = intArrayOf(AlertType.TORRENT_ERROR.swig(), AlertType.FILE_ERROR.swig(),
-                    AlertType.TORRENT_CHECKED.swig(), AlertType.STATE_CHANGED.swig(), AlertType.LISTEN_FAILED.swig())
-                override fun alert(alert: Alert<*>) { println("seed_alert ${alert.message()}") }
-            })
-            println("native_source file=${info.files().filePath(0)} hash=${info.infoHashV1()}")
-            seed.download(info, seedDir, null, null, null, TorrentFlags.SEED_MODE)
-            waitUntil("seed handle") { seed.find(info.infoHashV1()) != null }
-            val seedHandle = seed.find(info.infoHashV1())!!
-            seedHandle.unsetFlags(TorrentFlags.AUTO_MANAGED)
-            seedHandle.resume()
-            waitUntil("seed ready") { seedHandle.status(true).isSeeding }
-            waitUntil("seed listener") { seed.swig().listen_port() > 0 }
-            println("seed_port ${seed.swig().listen_port()}")
-            leech.addListener(object : AlertListener {
-                override fun types() = intArrayOf(AlertType.TORRENT_ERROR.swig(), AlertType.FILE_ERROR.swig(),
-                    AlertType.PEER_CONNECT.swig(), AlertType.PEER_DISCONNECTED.swig(), AlertType.PEER_ERROR.swig(),
-                    AlertType.PEER_BLOCKED.swig(), AlertType.LISTEN_FAILED.swig())
-                override fun alert(alert: Alert<*>) { println("leech_alert ${alert.message()}") }
-            })
+            if (localPeer) {
+                seed.addListener(object : AlertListener {
+                    override fun types() = intArrayOf(AlertType.LISTEN_SUCCEEDED.swig(), AlertType.LISTEN_FAILED.swig(),
+                        AlertType.TORRENT_ERROR.swig(), AlertType.FILE_ERROR.swig())
+                    override fun alert(alert: Alert<*>) {
+                        if (alert is ListenSucceededAlert && alert.socketType() == SocketType.TCP) {
+                            seedPort.set(alert.port())
+                        }
+                        println("seed_alert ${alert.message()}")
+                    }
+                })
+                seed.start(SessionParams(settings()).apply { setPosixDiskIO() })
+                println("native_source file=${info.files().filePath(0)} hash=${info.infoHashV1()}")
+                seed.download(info, seedDir, null, null, null, TorrentFlags.SEED_MODE)
+                waitUntil("seed handle") { seed.find(info.infoHashV1()) != null }
+                val seedHandle = seed.find(info.infoHashV1())!!
+                seedHandle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                seedHandle.resume()
+                waitUntil("seed ready") { seedHandle.status(true).isSeeding }
+                waitUntil("seed listener") { seedPort.get() > 0 }
+                println("seed_port ${seedPort.get()}")
+                leech.addListener(object : AlertListener {
+                    override fun types() = intArrayOf(AlertType.TORRENT_ERROR.swig(), AlertType.FILE_ERROR.swig(),
+                        AlertType.PEER_CONNECT.swig(), AlertType.PEER_DISCONNECTED.swig(), AlertType.PEER_ERROR.swig(),
+                        AlertType.PEER_BLOCKED.swig(), AlertType.LISTEN_FAILED.swig())
+                    override fun alert(alert: Alert<*>) { println("leech_alert ${alert.message()}") }
+                })
+            }
             leech.download(info, leechDir, null, null, null, TorrentFlags.UPLOAD_MODE)
             waitUntil("leecher metadata") { leech.find(info.infoHashV1())?.torrentFile() != null }
             val handle = leech.find(info.infoHashV1())!!
@@ -83,7 +100,7 @@ class TorrentNativeSelectionTest {
             handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
             handle.unsetFlags(TorrentFlags.UPLOAD_MODE)
             handle.resume()
-            handle.swig().connect_peer(tcp_endpoint(Address("127.0.0.1").swig(), seed.swig().listen_port()))
+            if (localPeer) handle.swig().connect_peer(tcp_endpoint(Address("127.0.0.1").swig(), seedPort.get()))
             val demands = TorrentReadDemands(info.pieceLength())
             val selection = TorrentPieceSelection(handle::havePiece,
                 { piece, deadline -> handle.setPieceDeadline(piece, deadline) },
@@ -95,6 +112,8 @@ class TorrentNativeSelectionTest {
                 if (reader > 0) selection.apply(demands.remove(reader))
                 reader++
                 selection.apply(demands.update(reader, piece, info.numPieces() - 1))
+                val offset = piece * info.pieceLength()
+                if (!localPeer) handle.addPiece(piece, data.copyOfRange(offset, offset + info.pieceLength()))
                 try { waitUntil("piece $piece") { handle.havePiece(piece) } }
                 catch (failure: AssertionError) {
                     println("leech_status peers=${handle.status(true).numPeers()} state=${handle.status(true).state()} error=${handle.status(true).errorCode().message()} priority=${handle.piecePriority(piece)} queue=${handle.getDownloadQueue().map { it.pieceIndex() }}")
@@ -104,7 +123,6 @@ class TorrentNativeSelectionTest {
                 RandomAccessFile(File(leechDir, original.name), "r").use {
                     it.seek(piece.toLong() * info.pieceLength()); it.readFully(actual)
                 }
-                val offset = piece * info.pieceLength()
                 assertArrayEquals(data.copyOfRange(offset, offset + actual.size), actual)
                 println("native_read piece=$piece waitMs=${(System.nanoTime() - started) / 1_000_000}")
             }

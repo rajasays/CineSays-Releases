@@ -88,7 +88,10 @@ dependencies {
     // Supply the matching official jlibtorrent Linux/macOS/Windows runtime JAR.
     providers.gradleProperty("torrentNativeJar").orNull?.let {
         testRuntimeOnly(files(it))
-        tasks.withType<Test>().configureEach { systemProperty("cinesays.nativeTorrentTests", "true") }
+        tasks.withType<Test>().configureEach {
+            systemProperty("cinesays.nativeTorrentTests", "true")
+            systemProperty("cinesays.nativeTorrentPeerTest", providers.gradleProperty("torrentPeerTest").orElse("false").get())
+        }
     }
     implementation("org.apache.commons:commons-csv:1.11.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
