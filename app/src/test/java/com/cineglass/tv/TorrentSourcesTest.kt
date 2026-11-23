@@ -26,6 +26,23 @@ class TorrentSourcesTest {
         assertNull(parse("""{"streams":[{"infoHash":"$hash"}]}""", false).single().debridTorrent)
         assertNull(Addons.sanitize(addon.copy(manifestUrl = "http://example.org/manifest.json")))
     }
+    @Test fun curatedHashesStillWorkWithoutPaidDebrid() {
+        val approved = "0e876ce2a1a504f849ca72a5e2bc07347b3bc957"
+        val addon = Addon("approved", "Approved test", engine = Addons.STREMIO,
+            manifestUrl = "https://example.org/manifest.json",
+            authorizedTorrentHashes = listOf(approved))
+        val sanitized = Addons.sanitize(addon)!!
+        assertFalse(sanitized.defaultOn)
+        assertTrue(Addons.permitsTorrent(sanitized, approved))
+        assertFalse(Addons.permitsTorrent(sanitized, hash))
+        val parsed = StremioProtocol.parseStreams(
+            """{"streams":[{"infoHash":"$approved","behaviorHints":{"filename":"big_buck_bunny_720p_surround.mp4"}}]}""",
+            addon.id, addon.name, emptyList(), authorizedHashes = setOf(approved))
+        assertTrue(parsed.single().debridTorrent!!.directPlayback)
+        assertTrue(PlaybackRouter.options(ref, StreamSearch(parsed), emptyList(), emptySet(), false)
+            .single() is WatchAction.PlayTorrent)
+    }
+
     @Test fun torrentCapabilityDoesNotAllowArbitraryDirectUrls() {
         val stream = parse("""{"streams":[{"url":"https://unapproved.example/video.mp4"}]}""").single()
         assertFalse(stream.playable)
