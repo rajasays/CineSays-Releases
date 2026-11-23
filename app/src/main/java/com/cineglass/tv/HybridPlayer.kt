@@ -1007,7 +1007,7 @@ fun PlaybackSettingsSection(prefs: PlaybackPrefs, stremioInstalled: Boolean, str
 
     Text("Stremio: " + if (stremioInstalled) "installed. “Open in Stremio” appears in Watch Now." else "not installed.", color = Cs.textSoft, fontSize = 14.sp)
     Text("Streaming sources", color = Cs.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    val sourceNote = if (streamAddons.any { it.first.torrentStreams || it.first.realDebrid })
+    val sourceNote = if (streamAddons.any { it.first.torrentStreams || it.first.authorizedTorrentHashes.orEmpty().isNotEmpty() })
         " Torrent sources appear in Watch Now. Use content you are authorized to access; direct torrents use device storage and upload to peers."
         else " Enable additional sources under Add-ons."
     Text("In-app sources include public-domain and openly licensed films (Internet Archive)" +
