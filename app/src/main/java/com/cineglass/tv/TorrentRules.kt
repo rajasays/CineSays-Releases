@@ -64,6 +64,13 @@ internal object TorrentRules {
         piece in firstPiece..lastPiece && lastPiece.toLong() - firstPiece > 16L &&
             piece.toLong() >= lastPiece.toLong() - 2L
 
+    /** Different file region, not a nearby read or a container metadata-tail probe. */
+    fun isSeekJump(piece: Int, playbackPiece: Int, firstPiece: Int, lastPiece: Int): Boolean =
+        playbackPiece in firstPiece..lastPiece &&
+            piece in firstPiece..lastPiece &&
+            !isMetadataTailRange(piece, firstPiece, lastPiece) &&
+            kotlin.math.abs(piece.toLong() - playbackPiece.toLong()) >= 16L
+
     /** Only ask for an extra startup piece when its time budget is bounded. */
     fun startupWarmupPieces(first: Int, last: Int): List<Int> =
         if (first < 0 || last < first) emptyList() else listOf(first, minOf(first.toLong() + 1, last.toLong()).toInt()).distinct()
@@ -115,6 +122,7 @@ internal class TorrentPieceWaitBudget(private val startedAtMs: Long) {
  */
 internal class TorrentPriorityOwners {
     private val readers = LinkedHashMap<Int, Boolean>()
+    private val superseded = HashSet<Int>()
     var primary: Int? = null
         private set
 
@@ -125,11 +133,21 @@ internal class TorrentPriorityOwners {
     /** True when the playback scheduling owner changed. */
     fun leave(readerId: Int): Boolean {
         if (readers.remove(readerId) == null) return false
+        superseded.remove(readerId)
         if (primary != readerId) return false
-        primary = readers.entries.firstOrNull { it.value }?.key
+        primary = readers.entries.firstOrNull { it.value && it.key !in superseded }?.key
         return true
     }
 
+    /** Transfer to a new far-seek reader once. Old readers cannot reclaim it. */
+    fun promote(readerId: Int): Boolean {
+        if (readers[readerId] != true || readerId in superseded || primary == readerId) return false
+        primary?.let { superseded.add(it) }
+        primary = readerId
+        return true
+    }
+
+    fun canPromote(readerId: Int): Boolean = readers[readerId] == true && readerId !in superseded
     fun isPrimary(readerId: Int): Boolean = primary == readerId
 }
 
