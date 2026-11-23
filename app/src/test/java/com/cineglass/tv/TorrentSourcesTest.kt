@@ -8,7 +8,7 @@ class TorrentSourcesTest {
     private val hash = "11ea02584fa6351956f35671962ab46354d99060"
     private val ref = MediaRef(MediaType.MOVIE, 1, "Test", "tt0063350")
     private fun parse(json: String, enabled: Boolean = true) = StremioProtocol.parseStreams(
-        json, "test", "Test", emptyList(), allowTorrentStreams = enabled, allowDebrid = false)
+        json, "test", "Test", emptyList(), allowTorrentStreams = enabled)
 
     @Test fun suppliedResponseOffersFreePlaybackWithoutDebrid() {
         val stream = parse("""{"streams":[{"infoHash":"$hash","title":"1.51 GB","fileIdx":0,"name":"1080p"}]}""").single()
