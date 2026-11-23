@@ -74,6 +74,19 @@ class TorrentPlayback private constructor(
     private val lastFilePiece = ((fileOffset + fileSize - 1) / pieceLength).toInt()
     private var lastPeerDiagnosticsAt = 0L
     private val startupWarmupUsed = AtomicBoolean(false)
+    /** Snapshot for the player warning; does not change torrent priorities or playback. */
+    @Synchronized fun sourceHealth(bufferedSeconds: Int): String {
+        if (closed.get()) return "This torrent session has ended."
+        return runCatching {
+            val peers = handle.status().numPeers()
+            val piece = requestedPiece
+            val ahead = if (piece >= 0) TorrentRules.adaptiveReadWindow(piece, lastFilePiece, pieceLength)
+                .takeWhile { handle.havePiece(it) }.size else 0
+            val advertised = if (piece >= 0) handle.pieceAvailability().getOrNull(piece) else null
+            TorrentHealthRules.message(peers, advertised, ahead, bufferedSeconds)
+        }.getOrDefault("This torrent is taking longer than expected. Try another source.")
+    }
+
 
     @Synchronized private fun logPeerDiagnostics(now: Long, waitingPiece: Int) {
         if (now - lastPeerDiagnosticsAt < 5_000) return
