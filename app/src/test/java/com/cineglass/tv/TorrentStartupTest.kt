@@ -63,6 +63,30 @@ class TorrentStartupTest {
         assertEquals(4, owners.primary)
     }
 
+    @Test fun metadataTailNeverInheritsPlaybackPriority() {
+        assertTrue(TorrentRules.isMetadataTailRange(1024, 0, 1024))
+        assertTrue(TorrentRules.isMetadataTailRange(1022, 0, 1024))
+        assertFalse(TorrentRules.isMetadataTailRange(1021, 0, 1024))
+        assertFalse(TorrentRules.isMetadataTailRange(15, 0, 15))
+        assertFalse(TorrentRules.isMetadataTailRange(1024, 100, 200))
+
+        val owners = TorrentPriorityOwners()
+        owners.enter(1) // main playback
+        owners.enter(2, eligible = false) // tail metadata
+        owners.enter(3) // next video playback range
+        assertTrue(owners.leave(1))
+        assertEquals(3, owners.primary)
+        assertTrue(owners.isPrimary(3))
+        assertFalse(owners.leave(2))
+        assertTrue(owners.leave(3))
+        assertNull(owners.primary)
+
+        owners.enter(4, eligible = false)
+        assertNull(owners.primary)
+        owners.enter(5)
+        assertEquals(5, owners.primary)
+    }
+
     @Test fun readAheadIsBoundedAtEndAndIntegerLimit() {
         assertEquals(listOf(98, 99), TorrentRules.readWindow(98, 99))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
