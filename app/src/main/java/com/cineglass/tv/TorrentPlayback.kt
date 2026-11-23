@@ -25,6 +25,7 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal class TorrentPreparationException(message: String) : IOException(message)
 
@@ -63,7 +64,11 @@ class TorrentPlayback private constructor(
         }
     }
 
+    private val priorityOwners = TorrentPriorityOwners()
+    private val nextReaderId = AtomicInteger(1)
     private var priorityWindow: Set<Int> = emptySet()
+    private val auxiliaryDeadlinePieces = HashMap<Int, Int>()
+    private var lastReadyAheadLog = 0L
     private var requestedPiece = -1
     private val firstFilePiece = (fileOffset / pieceLength).toInt()
     private val lastFilePiece = ((fileOffset + fileSize - 1) / pieceLength).toInt()
@@ -79,10 +84,39 @@ class TorrentPlayback private constructor(
         }.onFailure { Log.w("CineSaysTorrent", "peer_status unavailable: ${it.javaClass.simpleName}") }
     }
 
-    @Synchronized private fun prioritizeRead(piece: Int) {
-        // MP4/MKV parsers may probe the final pieces while downloading the start.
-        // Give the probe an urgent deadline but never replace the active playback
-        // window with the tail probe's window.
+    @Synchronized private fun registerReader(readerId: Int) {
+        priorityOwners.enter(readerId)
+    }
+
+    @Synchronized private fun releaseReader(readerId: Int) {
+        val wasPrimary = priorityOwners.leave(readerId)
+        auxiliaryDeadlinePieces.remove(readerId)?.let { old ->
+            if (old !in priorityWindow) runCatching { handle.resetPieceDeadline(old) }
+        }
+        if (wasPrimary) {
+            // A seek can close the old HTTP reader while another range request
+            // is already waiting. Allow the new owner to rebuild its window.
+            requestedPiece = -1
+            Log.i("CineSaysTorrent", "priority_handoff ownerActive=${priorityOwners.primary != null}")
+        }
+    }
+
+    @Synchronized private fun prioritizeRead(piece: Int, readerId: Int) {
+        if (!priorityOwners.isPrimary(readerId)) {
+            // Metadata probes and overlapping HTTP requests must not reset the
+            // sequential playback window. Allow one urgent piece per auxiliary
+            // reader so MP4/MKV index lookups and seeks can still progress.
+            val previous = auxiliaryDeadlinePieces[readerId]
+            if (previous != piece) {
+                if (previous != null && previous !in priorityWindow) {
+                    runCatching { handle.resetPieceDeadline(previous) }
+                }
+                auxiliaryDeadlinePieces[readerId] = piece
+                if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, 125)
+                Log.i("CineSaysTorrent", "auxiliary_piece piece=$piece playbackPiece=$requestedPiece")
+            }
+            return
+        }
         if (TorrentRules.isTailProbe(piece, firstFilePiece, lastFilePiece, requestedPiece)) {
             if (!handle.havePiece(piece)) handle.setPieceDeadline(piece, 0)
             Log.i("CineSaysTorrent", "tail_probe piece=$piece playbackPiece=$requestedPiece")
@@ -90,12 +124,20 @@ class TorrentPlayback private constructor(
         }
         if (requestedPiece == piece) return
         val next = TorrentRules.adaptiveReadWindow(piece, lastFilePiece, pieceLength).toSet()
-        (priorityWindow - next).forEach { runCatching { handle.resetPieceDeadline(it) } }
+        (priorityWindow - next).forEach { old ->
+            if (old !in auxiliaryDeadlinePieces.values) runCatching { handle.resetPieceDeadline(old) }
+        }
         next.forEach { index ->
             if (!handle.havePiece(index)) handle.setPieceDeadline(index, (index - piece) * 125)
         }
         priorityWindow = next
         requestedPiece = piece
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastReadyAheadLog >= 5_000) {
+            lastReadyAheadLog = now
+            val contiguous = next.takeWhile { handle.havePiece(it) }.size
+            Log.i("CineSaysTorrent", "ready_ahead anchor=$piece consecutivePieces=$contiguous windowPieces=${next.size} consecutiveKiB=${(contiguous.toLong() * pieceLength) / 1024}")
+        }
     }
 
     private fun warmupNextPiece(position: Long) {
@@ -116,19 +158,25 @@ class TorrentPlayback private constructor(
         Log.i("CineSaysTorrent", "startup_warmup nextReady=${handle.havePiece(next)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}")
     }
 
-    private fun waitForPiece(piece: Int) {
+    private fun waitForPiece(piece: Int, readerId: Int) {
         if (closed.get()) throw IOException("Torrent session closed")
         // Maintain look-ahead even when the requested piece is already available.
-        prioritizeRead(piece)
+        prioritizeRead(piece, readerId)
         if (handle.havePiece(piece)) return
         val startedAt = SystemClock.elapsedRealtime()
         val end = startedAt + 25_000
+        var nextPriorityUpdateAt = startedAt + 500
         while (!closed.get()) {
             val now = SystemClock.elapsedRealtime()
             if (handle.havePiece(piece)) {
                 val waited = now - startedAt
                 if (waited >= 500) Log.i("CineSaysTorrent", "piece_ready piece=$piece waitMs=$waited")
                 return
+            }
+            if (now >= nextPriorityUpdateAt) {
+                // Re-evaluate ownership after Media3 closes a stalled HTTP reader.
+                prioritizeRead(piece, readerId)
+                nextPriorityUpdateAt = now + 500
             }
             if (now - startedAt >= 2_000) logPeerDiagnostics(now)
             if (now >= end) {
@@ -146,6 +194,8 @@ class TorrentPlayback private constructor(
     }
 
     private inner class TorrentDataSource : BaseDataSource(true) {
+        private val readerId = nextReaderId.getAndIncrement()
+        private var registered = false
         private var input: RandomAccessFile? = null
         private var requestUri: Uri? = null
         private var position = 0L
@@ -160,22 +210,30 @@ class TorrentPlayback private constructor(
             position = dataSpec.position
             remaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) fileSize - position
                 else minOf(dataSpec.length, fileSize - position)
-            if (remaining > 0) {
-                waitForPiece(((fileOffset + position) / pieceLength).toInt())
-                warmupNextPiece(position)
+            registerReader(readerId)
+            registered = true
+            try {
+                if (remaining > 0) {
+                    waitForPiece(((fileOffset + position) / pieceLength).toInt(), readerId)
+                    warmupNextPiece(position)
+                }
+                input = RandomAccessFile(file, "r").also { it.seek(position) }
+                requestUri = dataSpec.uri
+                opened = true
+                transferStarted(dataSpec)
+                return remaining
+            } catch (failure: Throwable) {
+                releaseReader(readerId)
+                registered = false
+                throw failure
             }
-            input = RandomAccessFile(file, "r").also { it.seek(position) }
-            requestUri = dataSpec.uri
-            opened = true
-            transferStarted(dataSpec)
-            return remaining
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
             if (length == 0) return 0
             if (remaining == 0L) return C.RESULT_END_OF_INPUT
             val absolute = fileOffset + position
-            waitForPiece((absolute / pieceLength).toInt())
+            waitForPiece((absolute / pieceLength).toInt(), readerId)
             val count = minOf(length.toLong(), remaining, pieceLength - absolute % pieceLength).toInt()
             val bytes = input?.read(buffer, offset, count) ?: -1
             if (bytes <= 0) throw IOException("Torrent piece could not be read")
@@ -193,6 +251,10 @@ class TorrentPlayback private constructor(
             } finally {
                 input = null
                 requestUri = null
+                if (registered) {
+                    registered = false
+                    releaseReader(readerId)
+                }
                 if (opened) {
                     opened = false
                     transferEnded()
