@@ -43,3 +43,21 @@ Published v1.8.7 and v1.8.6 remain untouched.
 - All diagnostics are on the existing v1.8.8 branch; no UI behavior, torrent permissions, or download timeouts were changed.
 - Build: `./gradlew.bat :app:testDebugUnitTest :app:assembleDebug`.
 - Reproduce buffering; capture with `adb logcat -d -v time -s CineSaysTorrent:V > cinesays-torrent-diag.log`. To collect logs reliably, clear logcat immediately before playback, reproduce, and run the capture command while the affected device remains connected.
+
+## 2026-11-23 Torrentio peer-ramp buffering follow-up
+
+A diagnostic capture recorded an initial 9 KiB/s across 11 peers, rising to 2.6–4.35 MiB/s and 20–29 peers, with first-piece wait 5.62 s and an independent piece-1024 seek. This is evidence of a slow startup ramp, not a confirmed local-network problem.
+
+Changes:
+- A tail-of-file metadata probe within the final three pieces no longer resets the active startup playback window when the playback cursor is within the first nine pieces. It still requests the required tail piece urgently, preserving legitimate MP4/MKV index reads.
+- Initial playback waits up to 1.2 seconds for the second piece after the first piece has already become readable (the wait is skipped if that piece is already ready or the file has only one piece).
+- HTTP SocketException after sending headers is now logged as `http_client_closed` at info level, since Media3 may cancel range requests during seek/probing. Other HTTP errors remain warnings.
+- JVM regression tests cover near-tail priority detection, distant seeks and boundary cases.
+- Existing UI, source discovery, permissions, playback timeout, Trakker, Friends, and watchlist are untouched.
+
+Build and device verification remain required after these commits. In Android Studio Terminal:
+`git switch feature/embedded-torrent-http-1.8.8`
+`git pull origin feature/embedded-torrent-http-1.8.8`
+`.\\gradlew.bat :app:testDebugUnitTest :app:assembleDebug`
+
+Compare one permitted Torrentio source before and after: playback startup, buffering interruptions in first two minutes, seeking, then WebTorrent MP4 playback/seek. Capture `adb logcat -d -v time -s CineSaysTorrent:V` if issues persist.
