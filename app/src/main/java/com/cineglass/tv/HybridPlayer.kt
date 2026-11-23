@@ -287,9 +287,8 @@ fun NativePlayerScreen(
                 modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .6f), RoundedCornerShape(12.dp)).padding(horizontal = 18.dp, vertical = 10.dp)) }
 
             if (playback.torrent != null && loading && error == null && !ended) {
-                TorrentLoadingCard(playback.title, playback.record.poster,
-                    if (firstFrameRendered) "Buffering video…" else "Loading stream…",
-                    modifier = Modifier.align(Alignment.Center))
+                TorrentPuzzleLoading(playback.title, playback.record.poster,
+                    if (firstFrameRendered) "Buffering video…" else "Loading stream…")
             }
 
             if (slowStart && error == null) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp).widthIn(max = 640.dp)
@@ -474,7 +473,7 @@ private fun FullScreenPlayback() {
 }
 
 
-/** Shared preparation/player loading view. Artwork is optional and never blocks playback. */
+/** Preparation loading view. Artwork is optional and never blocks playback. */
 @Composable
 internal fun TorrentLoadingCard(title: String, poster: String?, status: String,
     modifier: Modifier = Modifier) {
