@@ -287,7 +287,11 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 // A configured, approved gateway can return a regular HTTPS stream for this exact torrent.
                 // No gateway is enabled by default; the existing piece-aware engine remains the fallback.
-                val httpStream = if (_state.value.prefs.authorizedTorrentToHttpPlayback)
+                val prefs = _state.value.prefs
+                val approvedGatewayUrl = TorrServerGateway.normalizedBase(prefs.torrServerUrl)
+                AuthorizedTorrentHttp.configure(if (prefs.authorizedTorrentToHttpPlayback && approvedGatewayUrl != null)
+                    TorrServerGateway(approvedGatewayUrl) else null)
+                val httpStream = if (prefs.authorizedTorrentToHttpPlayback)
                     withContext(Dispatchers.IO) { AuthorizedTorrentHttp.resolve(stream, ref) }
                     else null
                 if (httpStream != null) {
