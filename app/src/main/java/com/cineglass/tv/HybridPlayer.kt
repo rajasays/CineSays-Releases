@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.MediaCodecList
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import android.view.Display
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
@@ -122,9 +124,26 @@ fun NativePlayerScreen(
     }
 
     DisposableEffect(player) {
+        val torrentDiagnostics = playback.torrent != null
+        var bufferingStartedAt = 0L
         val listener = object : Player.Listener {
-            override fun onPlayerError(e: PlaybackException) { error = describePlaybackError(e); report() }
-            override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED) { ended = true; report() } }
+            override fun onPlayerError(e: PlaybackException) {
+                if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
+                error = describePlaybackError(e); report()
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (torrentDiagnostics) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (state == Player.STATE_BUFFERING) {
+                        bufferingStartedAt = now
+                        Log.i("CineSaysTorrent", "player_buffering positionMs=${player.currentPosition}")
+                    } else if (bufferingStartedAt != 0L) {
+                        Log.i("CineSaysTorrent", "player_buffering_end durationMs=${now - bufferingStartedAt} nextState=$state")
+                        bufferingStartedAt = 0L
+                    }
+                }
+                if (state == Player.STATE_ENDED) { ended = true; report() }
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) report() } // pause / stop
         }
         player.addListener(listener)
