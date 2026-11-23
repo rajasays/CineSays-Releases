@@ -75,7 +75,7 @@ class TorrentPlayback private constructor(
     private var lastPeerDiagnosticsAt = 0L
     private val startupWarmupUsed = AtomicBoolean(false)
 
-    @Synchronized private fun logPeerDiagnostics(now: Long) {
+    @Synchronized private fun logPeerDiagnostics(now: Long, waitingPiece: Int) {
         if (now - lastPeerDiagnosticsAt < 5_000) return
         lastPeerDiagnosticsAt = now
         runCatching {
@@ -85,7 +85,22 @@ class TorrentPlayback private constructor(
                     .takeWhile { handle.havePiece(it) }.size
             } else 0
             Log.i("CineSaysTorrent", "peer_status peers=${status.numPeers()} downloadKiBps=${status.downloadRate() / 1024} pieceBytes=$pieceLength readyAheadPieces=$ahead")
-        }.onFailure { Log.w("CineSaysTorrent", "peer_status unavailable: ${it.javaClass.simpleName}") }
+
+            // These are snapshots, not a peer identity trace. Availability is
+            // the count of connected peers advertising the requested piece.
+            // Absence from the partial queue means it is not currently listed
+            // as an active partial piece, NOT proof that the swarm lacks it.
+            val availability = handle.pieceAvailability()
+            val advertised = availability.getOrNull(waitingPiece)
+            val queue = handle.getDownloadQueue()
+            val partial = queue.firstOrNull { it.pieceIndex() == waitingPiece }
+            val state = if (handle.havePiece(waitingPiece)) "verified"
+                else if (partial != null) "partial" else "not_in_partial_queue"
+            Log.i("CineSaysTorrent", "piece_diagnostic piece=$waitingPiece state=$state advertisedPeers=${advertised ?: -1} " +
+                "finishedBlocks=${partial?.finished() ?: -1} writingBlocks=${partial?.writing() ?: -1} " +
+                "requestedBlocks=${partial?.requested() ?: -1} totalBlocks=${partial?.blocksInPiece() ?: -1} " +
+                "queueEntries=${queue.size}")
+        }.onFailure { Log.w("CineSaysTorrent", "peer_diagnostics unavailable: ${it.javaClass.simpleName}") }
     }
 
     @Synchronized private fun registerReader(readerId: Int, piece: Int) {
@@ -185,7 +200,7 @@ class TorrentPlayback private constructor(
                 prioritizeRead(piece, readerId)
                 nextPriorityUpdateAt = now + 500
             }
-            if (now - startedAt >= 2_000) logPeerDiagnostics(now)
+            if (now - startedAt >= 2_000) logPeerDiagnostics(now, piece)
             if (now >= nextStalledPieceRefreshAt) {
                 // A piece can be starved by the swarm even while unrelated
                 // torrent data downloads. Refresh only this missing piece's
