@@ -193,6 +193,7 @@ fun NativePlayerScreen(
     // Torrent sources can stall after a seek as well as at startup. The warning
     // is advisory: never auto-switch sources, stop the torrent or discard progress.
     var slowStart by remember(playback.url) { mutableStateOf(false) }
+    var torrentBufferedMs by remember(playback.url) { mutableStateOf(0L) }
     var torrentHealth by remember(playback.url) { mutableStateOf<String?>(null) }
     LaunchedEffect(player) {
         var waited = 0
@@ -203,6 +204,7 @@ fun NativePlayerScreen(
             waited = if (stuck) waited + 1 else 0
             slowStart = waited >= 15
             if (playback.torrent != null) {
+                torrentBufferedMs = if (buffering) player.totalBufferedDuration.coerceAtLeast(0) else 0L
                 if (!slowStart) torrentHealth = null
                 else if (waited == 15 || waited % 5 == 0) {
                     torrentHealth = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -287,8 +289,9 @@ fun NativePlayerScreen(
                 modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .6f), RoundedCornerShape(12.dp)).padding(horizontal = 18.dp, vertical = 10.dp)) }
 
             if (playback.torrent != null && loading && error == null && !ended) {
-                TorrentPuzzleLoading(playback.title, playback.record.poster,
-                    if (firstFrameRendered) "Buffering video…" else "Loading stream…")
+                TorrentPuzzleLoading(playback.title, playback.record.poster?.takeIf { it.isNotBlank() }
+                    ?: playback.item?.poster,
+                    if (firstFrameRendered) "Buffering video…" else "Loading stream…", torrentBufferedMs)
             }
 
             if (slowStart && error == null) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp).widthIn(max = 640.dp)
@@ -866,13 +869,32 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
     val gap = 12.dp
     val tileWidth = (contentWidth - gap * (columns - 1)) / columns
 
+    val previous = remember(w.options, w.lastPlayedSource) {
+        w.lastPlayedSource?.let { key ->
+            w.options.firstOrNull { action ->
+                when (action) {
+                    is WatchAction.PlayNative -> action.stream.historyKey() == key
+                    is WatchAction.PlayTorrent -> action.stream.historyKey() == key
+                    else -> false
+                }
+            }
+        }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
+        when (previous) {
+            is WatchAction.PlayNative -> FeaturedSourceCard(previous.stream, featured = true,
+                compact = layout == WatchLayout.PHONE, modifier = focusMod(), lastPlayed = true) { onAction(previous) }
+            is WatchAction.PlayTorrent -> SourceCard(previous.stream, focusMod(),
+                otherSource = true, lastPlayed = true) { onAction(previous) }
+            else -> Unit
+        }
         if (w.searching) SearchingPlaceholder(layout)
 
-        val native = w.options.filterIsInstance<WatchAction.PlayNative>()
+        val native = w.options.filterIsInstance<WatchAction.PlayNative>().filter { it != previous }
         if (native.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Play in CineSays", native.size.takeIf { it > 1 })
-            native.forEachIndexed { i, a -> FeaturedSourceCard(a.stream, featured = i == 0, compact = layout == WatchLayout.PHONE, modifier = focusMod(), lastPlayed = w.lastPlayedSource?.let { it == a.stream.historyKey() } == true) { onAction(a) } }
+            native.forEachIndexed { i, a -> FeaturedSourceCard(a.stream, featured = i == 0, compact = layout == WatchLayout.PHONE, modifier = focusMod()) { onAction(a) } }
         }
 
         val services = w.options.filterIsInstance<WatchAction.OpenService>()
@@ -894,10 +916,10 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
         }
 
         // Preserve the discovery order within Other Sources.
-        val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>()
+        val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>().filter { it != previous }
         if (torrents.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Other Sources", torrents.size)
-            torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true, lastPlayed = w.lastPlayedSource?.let { it == a.stream.historyKey() } == true) { onAction(a) } }
+            torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true) { onAction(a) } }
         }
 
         w.options.filterIsInstance<WatchAction.Unavailable>().firstOrNull()?.let { a -> Notice(a.reason) }

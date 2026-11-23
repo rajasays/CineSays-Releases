@@ -30,20 +30,20 @@ import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 
 @Composable
-internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String) {
+internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String, bufferedMs: Long = 0L) {
     val artworkUrl = poster?.takeIf { it.isNotBlank() }?.let {
-        if (it.startsWith("http")) it else "https://image.tmdb.org/t/p/w780$it"
+        if (it.startsWith("http", ignoreCase = true)) it else "https://image.tmdb.org/t/p/w342/${it.trimStart('/')}"
     }
     val painter = rememberAsyncImagePainter(artworkUrl)
-    val ready = painter.state is AsyncImagePainter.State.Success
+    val artworkPainter = (painter.state as? AsyncImagePainter.State.Success)?.painter
     val assembly = remember(artworkUrl) { Animatable(0f) }
-    LaunchedEffect(artworkUrl, ready) {
+    LaunchedEffect(artworkUrl, artworkPainter) {
         assembly.snapTo(0f)
-        assembly.animateTo(1f, tween(2400))
+        if (artworkPainter != null) assembly.animateTo(1f, tween(6500))
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF090E19))) {
-        Box(Modifier.fillMaxSize().drawWithCache {
+        if (artworkPainter != null) Box(Modifier.fillMaxSize().drawWithCache {
             val columns = if (size.width > size.height) 5 else 3
             val rows = if (columns == 5) 3 else 5
             val width = size.width / columns
@@ -55,7 +55,7 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
             }
             // Coil has no intrinsic dimensions until it has resolved the artwork.
             // Compose throws if width/height are read from Size.Unspecified.
-            val artwork = if (ready) painter.intrinsicSize else Size.Unspecified
+            val artwork = artworkPainter.intrinsicSize
             val scale = if (artwork != Size.Unspecified &&
                 artwork.width > 0f && artwork.height > 0f &&
                 artwork.width.isFinite() && artwork.height.isFinite())
@@ -74,12 +74,8 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
                         val y = if (index % 3 == 0) -.45f * height else .45f * height
                         translate(x * (1f - progress), y * (1f - progress)) {
                             clipPath(path) {
-                                if (ready) {
-                                    translate(imageX, imageY) {
-                                        with(painter) { draw(imageSize, alpha = progress) }
-                                    }
-                                } else {
-                                    drawPath(path, Cs.accent.copy(alpha = progress * (if (index % 2 == 0) .48f else .27f)))
+                                translate(imageX, imageY) {
+                                    with(artworkPainter) { draw(imageSize, alpha = progress) }
                                 }
                             }
                             drawPath(path, Color(0xFF090E19).copy(alpha = .48f * progress),
@@ -103,7 +99,9 @@ internal fun TorrentPuzzleLoading(title: String, poster: String?, status: String
             Text(title, color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
             LinearProgressIndicator(Modifier.width(132.dp), color = Cs.accent)
-            Text(status, color = Color.White.copy(alpha = .86f), fontSize = 14.sp)
+            val bufferedSeconds = bufferedMs / 1000
+            val detail = if (bufferedSeconds > 0) "$status · ${bufferedSeconds}s buffered" else status
+            Text(detail, color = Color.White.copy(alpha = .86f), fontSize = 14.sp)
         }
     }
 }

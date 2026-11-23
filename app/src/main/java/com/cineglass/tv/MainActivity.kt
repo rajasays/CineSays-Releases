@@ -473,7 +473,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
         ) {
             if (watch != null) {
                 TorrentPuzzleLoading(selected?.title ?: watch.item.label,
-                    selected?.poster ?: watch.item.poster, "Getting the video ready…")
+                    selected?.poster?.takeIf { it.isNotBlank() } ?: watch.item.poster, "Getting the video ready…")
             } else {
                 TorrentLoadingCard("CineSays", null, "Getting the video ready…")
             }
