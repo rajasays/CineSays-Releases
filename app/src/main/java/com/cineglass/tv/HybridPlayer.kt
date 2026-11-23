@@ -936,9 +936,9 @@ private fun ContinueCard(r: PlaybackRecord, onResume: () -> Unit, onDetails: () 
     val shape = RoundedCornerShape(12.dp)
     val image = r.poster?.let { if (it.startsWith("http")) it else "https://image.tmdb.org/t/p/w342$it" }
     Column(Modifier.width(150.dp).graphicsLayer { val s = if (focused) 1.06f else 1f; scaleX = s; scaleY = s }, verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).onFocusChanged { focused = it.isFocused }.clip(shape).background(Cs.surfaceHigh)
+        Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).onFocusChanged { focused = it.isFocused }.clip(shape)
             .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape).clickable(onClick = onResume)) {
-            image?.let { AsyncImage(it, r.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            CsArt(image, r.title, Modifier.fillMaxSize())
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.55f to Color.Transparent, 1f to Color.Black.copy(alpha = .75f))))
             Text("▶ Resume", color = Cs.text, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(10.dp))
         }

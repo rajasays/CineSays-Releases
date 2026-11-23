@@ -38,10 +38,12 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -64,7 +66,9 @@ fun HomeScreen(
     openShow: (UpNextEntry) -> Unit = { openTracker() },
     continueWatching: List<PlaybackRecord> = emptyList(), onResume: (PlaybackRecord) -> Unit = {}, onResumeDetails: (PlaybackRecord) -> Unit = {}, onRemoveContinue: (PlaybackRecord) -> Unit = {},
     /** Watch Now for an Up next episode; null when the show isn't matched to TMDB. */
-    watchUpNext: (UpNextEntry) -> (() -> Unit)? = { null }
+    watchUpNext: (UpNextEntry) -> (() -> Unit)? = { null },
+    /** Watch Now for a banner title (the main button in the Cinematic theme). */
+    watchNow: ((TitleItem) -> Unit)? = null
 ) {
     val compact = LocalCompact.current
     val heroes = remember(state.sections) {
@@ -86,10 +90,25 @@ fun HomeScreen(
 
     // Coming back up from the rows below, show the whole banner, not just the strip around the focused button.
     val heroInView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val theme = Cs.theme
+    val cinematic = theme == CsTheme.CINEMATIC
+    // Cinematic: edge to edge across the screen's side padding, taller, no frame.
+    val bleed = if (!cinematic) 0.dp else if (compact) 16.dp else if (theme == CsTheme.FOCUS) 36.dp else 48.dp
+    val heroShape = RoundedCornerShape(if (cinematic) 0.dp else 22.dp)
+    val heroHeight = when { cinematic && compact -> 380.dp; cinematic -> 470.dp; compact -> 300.dp; else -> 340.dp }
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
-        Box(Modifier.fillMaxWidth().height(if (compact) 300.dp else 340.dp).bringIntoViewRequester(heroInView).clip(RoundedCornerShape(22.dp)).background(Cs.surface).border(1.dp, Cs.line, RoundedCornerShape(22.dp))
+        Box(Modifier.fillMaxWidth()
+            .layout { m, c ->
+                val extra = bleed.roundToPx() * 2
+                val placeable = m.measure(c.copy(minWidth = c.maxWidth + extra, maxWidth = c.maxWidth + extra))
+                layout(c.maxWidth, placeable.height) { placeable.place(-extra / 2, 0) }
+            }
+            .height(heroHeight).bringIntoViewRequester(heroInView).clip(heroShape)
+            .then(if (heroes.isEmpty()) Modifier.background(Cs.surface) else Modifier)
+            .then(if (cinematic) Modifier else Modifier.border(1.dp, Cs.line, heroShape))
             .onFocusChanged { val gained = it.hasFocus && !heroFocused; heroFocused = it.hasFocus
-                if (gained) scope.launch { delay(30); heroInView.bringIntoView() } }) {
+                // Same frame as the focused button's own scroll, so the two merge into one smooth move (a delay made two).
+                if (gained) scope.launch { heroInView.bringIntoView() } }) {
             if (heroes.isEmpty()) {
                 Text(if (state.busy) "Loading CineSays…" else "Discover your next favourite", Modifier.align(Alignment.CenterStart).padding(if (compact) 20.dp else 40.dp), color = Cs.text, fontSize = 26.sp)
             } else {
@@ -99,29 +118,32 @@ fun HomeScreen(
                 androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.fillMaxSize(), key = { heroes[it].ref }, userScrollEnabled = compact) { page ->
                     val hero = heroes[page]
                     Box(Modifier.fillMaxSize()) {
-                        AsyncImage(hero.hero(), hero.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                        Box(Modifier.fillMaxSize().background(if (compact) Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)
-                            else Brush.horizontalGradient(0f to Cs.bg, .38f to Cs.bg.copy(alpha = .85f), .72f to Color.Transparent)))
-                        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(.6f to Color.Transparent, 1f to Cs.bg.copy(alpha = .6f))))
+                        CsArt(hero.hero(), hero.label, Modifier.fillMaxSize(), placeholder = Cs.surface)
+                        // TV: the shade fades out at 72% of the width, so it's only drawn over that part (less GPU work per frame).
+                        if (compact) Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .45f to Cs.bg.copy(alpha = .7f), 1f to Cs.bg)))
+                        else Box(Modifier.fillMaxHeight().fillMaxWidth(.72f).background(Brush.horizontalGradient(0f to Cs.bg, .53f to Cs.bg.copy(alpha = .85f), 1f to Color.Transparent)))
+                        if (cinematic && !compact) Box(Modifier.fillMaxWidth().fillMaxHeight(.35f).align(Alignment.BottomCenter)
+                            .background(Brush.verticalGradient(0f to Color.Transparent, 1f to Cs.bg)))
                         if (compact) HeroText(hero, page, true, hero.ref in state.watchlist, Modifier.align(Alignment.BottomStart),
-                            if (page == pager.currentPage) Modifier.focusRequester(firstFocus) else Modifier, { openDetails(hero) }, { toggleWatchlist(hero) })
+                            if (page == pager.currentPage) Modifier.focusRequester(firstFocus) else Modifier, { openDetails(hero) }, { toggleWatchlist(hero) },
+                            watchNow?.let { w -> { w(hero) } }, bleed)
                     }
                 }
                 if (!compact) {
                     val page = pager.currentPage.coerceIn(0, heroes.lastIndex)
                     val hero = heroes[page]
                     HeroText(hero, page, false, hero.ref in state.watchlist, Modifier.align(Alignment.CenterStart),
-                        Modifier.focusRequester(firstFocus), { openDetails(hero) }, { toggleWatchlist(hero) })
+                        Modifier.focusRequester(firstFocus), { openDetails(hero) }, { toggleWatchlist(hero) }, watchNow?.let { w -> { w(hero) } }, bleed)
                 }
             }
             // Phones: dots under the text (swipe to move). TV: ‹ dots › at the bottom-right, clear of the buttons.
             if (heroes.size > 1) Row(Modifier.align(if (compact) Alignment.BottomStart else Alignment.BottomEnd)
-                .padding(start = 20.dp, end = if (compact) 20.dp else 28.dp, bottom = if (compact) 12.dp else 22.dp),
+                .padding(start = 20.dp + bleed, end = (if (compact) 20.dp else 28.dp) + bleed, bottom = if (compact) 12.dp else 22.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (!compact) CsChip("‹", false, compact = true) { step(-1) }
                 heroes.indices.forEach { i ->
                     val current = i == pager.currentPage
-                    Box(Modifier.size(if (current) 26.dp else 6.dp, 6.dp).background(if (current) Cs.accent else Color(0xFF5D7392), RoundedCornerShape(6.dp))
+                    Box(Modifier.size(if (current) 26.dp else 6.dp, 6.dp).background(if (current) Cs.accent else Cs.lineStrong, RoundedCornerShape(6.dp))
                         // Tappable on phones; on TV the dots stay out of D-pad focus (they have no focus look), ‹ › move instead.
                         .then(if (compact) Modifier.clickable { scope.launch { pager.animateScrollToPage(i) } } else Modifier))
                 }
@@ -171,14 +193,18 @@ fun HomeScreen(
 @Composable
 private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit, onWatchNow: (() -> Unit)? = null) {
     var focused by remember { mutableStateOf(false) }
+    var within by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
-    Column(Modifier.width(268.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Focus theme on TV: cards stay compact and open wider, with their buttons, while the remote is on them.
+    val expanding = Cs.theme == CsTheme.FOCUS && !LocalCompact.current
+    val width by androidx.compose.animation.core.animateDpAsState(if (expanding && !within) 220.dp else if (expanding) 340.dp else 268.dp, label = "upNext")
+    Column(Modifier.width(width).onFocusChanged { within = it.hasFocus }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
             .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape)
             .clip(shape).background(Cs.surface).clickable(onClick = onOpen)) {
-            Box(Modifier.fillMaxWidth().height(92.dp).background(Cs.surfaceHigh)) {
-                AsyncImage(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w300$it" },
-                    null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Box(Modifier.fillMaxWidth().height(92.dp)) {
+                CsArt(e.episode.still?.let { "https://image.tmdb.org/t/p/w300$it" } ?: e.poster?.let { "https://image.tmdb.org/t/p/w300$it" },
+                    null, Modifier.fillMaxSize())
                 CsBadge(e.badge, Modifier.align(Alignment.TopStart).padding(10.dp), dark = true)
             }
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -187,7 +213,7 @@ private fun UpNextCard(e: UpNextEntry, onWatched: () -> Unit, onOpen: () -> Unit
                 Text(if (focused) "Select: open in Tracker" else e.detail, color = if (focused) Cs.accent else Cs.textMuted, fontSize = 11.sp)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!expanding || within) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             onWatchNow?.let { CsChip("▶ Watch Now", false, compact = true) { it() } }
             CsChip("✓ Watched S${e.episode.season}E${e.episode.number}", false, compact = true) { onWatched() }
         }
@@ -250,7 +276,7 @@ fun DetailsScreen(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (!compact) CsChip("← Back", false, Modifier.focusRequester(backFocus)) { onBack() }
                     Text(item.label, color = Cs.text, fontSize = if (compact) 24.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 28.sp else 44.sp)
-                    item.tagline?.let { Text("“$it”", color = Color(0xFFB8C6DA), fontSize = 16.sp, fontStyle = FontStyle.Italic) }
+                    item.tagline?.let { Text("“$it”", color = Cs.textSoft, fontSize = 16.sp, fontStyle = FontStyle.Italic) }
                     val meta = listOfNotNull(
                         item.year.ifBlank { null }, if (item.kind == "tv") "TV Series" else "Movie",
                         item.seasons?.takeIf { item.kind == "tv" && it > 0 }?.let { "$it season${if (it > 1) "s" else ""}" },
@@ -262,7 +288,7 @@ fun DetailsScreen(
                         RatingTile("IMDb", state.imdbRating ?: "—")
                         RatingTile("Rotten Tomatoes", state.rottenTomatoes ?: "—")
                     }
-                    Text(item.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 780.dp))
+                    Text(item.overview.orEmpty(), color = Cs.textSoft, fontSize = 16.sp, lineHeight = 24.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 780.dp))
                     if (!compact) DetailActions(item, state, best, inTracker, liked, movieWatched, context, onToggleWatchlist, onTrack, onRecommend, onLike, onMovieWatched, onPlayTrailer, onWatchFree, onWatchNow)
                 }
             }
@@ -310,7 +336,7 @@ fun PersonScreen(person: Person, busy: Boolean, firstFocus: FocusRequester, onBa
                         runCatching { val d = java.time.LocalDate.parse(b); "Born ${d.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy"))}" }.getOrNull() },
                         person.birthplace).joinToString("  ·  "), color = Cs.accent, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 person.biography?.takeIf { it.isNotBlank() }?.let { bio ->
-                    Text(bio, color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = if (bioOpen) 40 else 4, overflow = TextOverflow.Ellipsis,
+                    Text(bio, color = Cs.textSoft, fontSize = 15.sp, lineHeight = 22.sp, maxLines = if (bioOpen) 40 else 4, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = 820.dp))
                     if (bio.length > 280) CsChip(if (bioOpen) "Less" else "Read more", false, compact = true) { bioOpen = !bioOpen }
                 }
@@ -400,7 +426,7 @@ private fun OfferCell(text: String, highlighted: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(8.dp)
     Text(text, Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
         .border(if (focused) 2.dp else 1.dp, if (focused) Cs.focusRing else if (highlighted) Cs.accent else Color.Transparent, shape)
-        .background(if (highlighted) Color(0xFF0A3A6E) else Cs.surfaceHigh, shape).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
+        .background(if (highlighted) Cs.buttonFocus else Cs.surfaceHigh, shape).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
         color = Cs.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
@@ -538,7 +564,7 @@ private fun RouletteReveal(
                     Text((if (mine) "✓ Included with your ${p.name}" else "Available on ${p.name}") + " · ${regionLabel(r)}",
                         color = if (mine) Cs.good else Cs.textSoft, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 } ?: Text("No streaming offer found in your regions; check Details for rent or buy.", color = Cs.warn, fontSize = 14.sp)
-                Text(pick.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(pick.overview.orEmpty(), color = Cs.textSoft, fontSize = 16.sp, lineHeight = 24.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     val offer = state.rouletteOffer
@@ -563,7 +589,7 @@ private fun Wheel(modifier: Modifier) {
         val segments = 12
         val sweep = 360f / segments
         repeat(segments) { i ->
-            drawArc(if (i % 2 == 0) Color(0xFF0A3A6E) else Cs.surfaceHigh, i * sweep, sweep, useCenter = true)
+            drawArc(if (i % 2 == 0) Cs.buttonFocus else Cs.surfaceHigh, i * sweep, sweep, useCenter = true)
             drawArc(Cs.line, i * sweep, sweep, useCenter = true, style = Stroke(2f))
         }
         drawCircle(Cs.lineStrong, radius = size.minDimension / 2 - 3f, style = Stroke(6f))
@@ -625,13 +651,13 @@ fun ServiceTiles(selected: Set<String>, firstFocus: FocusRequester? = null, onTo
                     val base = if (rowIndex == 0 && i == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier
                     Row(base.then(if (LocalCompact.current) Modifier.weight(1f) else Modifier.width(196.dp)).height(72.dp).onFocusChanged { focused = it.isFocused }
                         .border(if (focused) 3.dp else if (on) 2.dp else 1.dp, if (focused) Cs.focusRing else if (on) Cs.accent else Cs.line, shape)
-                        .background(if (on) Color(0xFF0A3A6E) else Cs.surface, shape).clickable { onToggle(s.key) }.padding(horizontal = 16.dp),
+                        .background(if (on) Cs.buttonFocus else Cs.surface, shape).clickable { onToggle(s.key) }.padding(horizontal = 16.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(s.label, color = Cs.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                             if (s.free) Text("Free with ads", color = Cs.textMuted, fontSize = 11.sp)
                         }
-                        Text(if (on) "✓" else "+", color = if (on) Color(0xFFB5E0FF) else Cs.textMuted, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(if (on) "✓" else "+", color = if (on) Cs.accent else Cs.textMuted, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -643,18 +669,31 @@ fun ServiceTiles(selected: Set<String>, firstFocus: FocusRequester? = null, onTo
 @Composable
 private fun HeroText(
     hero: TitleItem, page: Int, compact: Boolean, saved: Boolean, modifier: Modifier,
-    detailsModifier: Modifier, onDetails: () -> Unit, onWatchlist: () -> Unit
+    detailsModifier: Modifier, onDetails: () -> Unit, onWatchlist: () -> Unit,
+    onWatchNow: (() -> Unit)? = null, inset: Dp = 0.dp
 ) {
-    Column(if (compact) modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 34.dp).fillMaxWidth()
-        else modifier.padding(start = 40.dp).fillMaxWidth(.5f),
-        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
-        Text("TRENDING #${page + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}", color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
-        Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = FontWeight.ExtraBold, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
-        if (!compact) Text(hero.overview.orEmpty(), color = Color(0xFFD5DFEC), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CsButton("Details", primary = true, modifier = detailsModifier) { onDetails() }
-            CsButton(if (saved) "✓ Saved" else "+ Watchlist") { onWatchlist() }
+    val theme = Cs.theme
+    val editorial = theme == CsTheme.EDITORIAL
+    // Cinematic leads with Watch Now; the other themes lead with Details.
+    val watchFirst = theme == CsTheme.CINEMATIC && onWatchNow != null
+    Row(if (compact) modifier.padding(start = 20.dp + inset, end = 20.dp + inset, top = 20.dp, bottom = 34.dp).fillMaxWidth()
+        else modifier.padding(start = 40.dp + inset).fillMaxWidth(if (editorial) .62f else .5f),
+        horizontalArrangement = Arrangement.spacedBy(22.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Editorial (TV): the poster beside the text, like a magazine feature.
+        if (editorial && !compact) CsArt(hero.image("w342"), null, Modifier.width(150.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(10.dp)))
+        Column(verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
+            Text(if (editorial) "TONIGHT'S PICK · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}" else "TRENDING #${page + 1} · ${if (hero.kind == "tv") "SERIES" else "MOVIE"}",
+                color = Cs.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
+            Text(hero.label, color = Cs.text, fontSize = if (compact) 28.sp else 42.sp, fontWeight = if (editorial) FontWeight.Bold else FontWeight.ExtraBold,
+                fontFamily = Cs.titleFont, lineHeight = if (compact) 31.sp else 44.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(listOf("★ ${"%.1f".format(hero.rating)}", hero.year).filter { it.isNotBlank() }.joinToString("    "), color = Cs.textSoft, fontSize = 15.sp)
+            if (!compact) Text(hero.overview.orEmpty(), color = Cs.textSoft, fontSize = 15.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (watchFirst) CsButton("▶ Watch Now", primary = true, modifier = detailsModifier) { onWatchNow?.invoke() }
+                CsButton("Details", primary = !watchFirst, modifier = if (watchFirst) Modifier else detailsModifier) { onDetails() }
+                // Three buttons don't fit a phone's width: Cinematic shows the watchlist as a short +/✓ there.
+                CsButton(if (compact && watchFirst) (if (saved) "✓" else "+") else if (saved) "✓ Saved" else "+ Watchlist") { onWatchlist() }
+            }
         }
     }
 }

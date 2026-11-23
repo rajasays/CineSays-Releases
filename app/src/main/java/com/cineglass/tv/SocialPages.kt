@@ -204,7 +204,7 @@ private fun FriendCard(friend: CineFriend, picksFrom: Int, selected: Boolean, on
     val shape = RoundedCornerShape(16.dp)
     Column(Modifier.width(150.dp).onFocusChanged { focused = it.isFocused }
         .border(if (focused) 3.dp else if (selected) 2.dp else 1.dp, if (focused) Cs.focusRing else if (selected) Cs.accent else Cs.line, shape)
-        .background(if (selected) Color(0xFF0A3A6E) else Cs.surface, shape).clickable(onClick = onClick).padding(14.dp),
+        .background(if (selected) Cs.buttonFocus else Cs.surface, shape).clickable(onClick = onClick).padding(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Avatar(friend.name, 64.dp, friend.uid)
         Text(friend.name.ifBlank { "Friend" }, color = Cs.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -275,7 +275,7 @@ fun RecommendToFriendsDialog(item: TitleItem, social: SocialRepository, dismiss:
                         var focused by remember { mutableStateOf(false) }
                         Row(Modifier.onFocusChanged { focused = it.isFocused }
                             .border(if (focused) 3.dp else if (on) 2.dp else 1.dp, if (focused) Cs.focusRing else if (on) Cs.accent else Cs.line, RoundedCornerShape(999.dp))
-                            .background(if (on) Color(0xFF0A3A6E) else Cs.surface, RoundedCornerShape(999.dp))
+                            .background(if (on) Cs.buttonFocus else Cs.surface, RoundedCornerShape(999.dp))
                             .clickable { selected = if (on) selected - f.uid else selected + f.uid }.padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Avatar(f.name, 30.dp, f.uid)

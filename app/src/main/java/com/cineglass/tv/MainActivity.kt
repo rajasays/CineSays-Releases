@@ -47,9 +47,29 @@ data class NavRequest(val tab: String? = null, val showTmdb: Int = 0, val kind: 
 class MainActivity : ComponentActivity() {
     private val nav = mutableStateOf<NavRequest?>(null)
 
+    /**
+     * Artwork loading tuned for TVs: a smaller in-memory cache (smaller still on low-RAM devices, which also decode
+     * in 16-bit colour), a 120 MB disk cache so posters aren't downloaded again on every visit, and TMDB's
+     * never-changing image files kept regardless of their short cache headers.
+     */
+    private fun installImageLoader() {
+        val lowRam = (getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager).isLowRamDevice
+        coil.Coil.setImageLoader(coil.ImageLoader.Builder(applicationContext)
+            .memoryCache { coil.memory.MemoryCache.Builder(applicationContext).maxSizePercent(if (lowRam) 0.12 else 0.18).build() }
+            .diskCache { coil.disk.DiskCache.Builder().directory(cacheDir.resolve("artwork")).maxSizeBytes(120L * 1024 * 1024).build() }
+            .respectCacheHeaders(false)
+            .allowRgb565(lowRam)
+            .crossfade(false)
+            .build())
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Api.init(applicationContext)
+        Cs.load(applicationContext) // Settings › Themes
+        installImageLoader()
+        // The app paints its own full-screen background; the window's would only be drawn underneath it every frame.
+        window.setBackgroundDrawable(null)
         // Optional start screen, e.g. `adb shell am start -n com.cineglass.tv/.MainActivity -e tab Roulette`.
         val startTab = intent?.getStringExtra("tab")?.takeIf { it in TABS || it == "Search" || it == "Settings" } ?: "Home"
         if (savedInstanceState == null) nav.value = navFrom(intent)
@@ -91,6 +111,8 @@ class MainActivity : ComponentActivity() {
 
 /** Top-level tabs. Movies, TV Shows and Genres are now one Discover screen; Recommendations lives under Friends. */
 private val TABS = listOf("Home", "Discover", "Free", "Tracker", "Watchlist", "Roulette", "Friends")
+/** Glyphs for the Focus theme's side rail. */
+private val RAIL_ICONS = mapOf("Home" to "⌂", "Discover" to "◎", "Free" to "✦", "Tracker" to "☰", "Watchlist" to "♡", "Roulette" to "⟳", "Friends" to "☺")
 
 @Composable
 private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Home", nav: NavRequest? = null, onNavHandled: () -> Unit = {}) {
@@ -280,11 +302,24 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     BoxWithConstraints(Modifier.fillMaxSize().background(Cs.bg).safeDrawingPadding()) { // keep clear of phone status/navigation bars (Android 15 is edge-to-edge)
     // Phones and narrow windows get stacked layouts and tighter padding.
     val compact = maxWidth < 700.dp
-    val sidePad = if (compact) 16.dp else 48.dp
-    CompositionLocalProvider(LocalCompact provides compact) {
-    Column(Modifier.fillMaxSize()) {
+    // Focus theme on TV: a side rail replaces the top tab bar. Phones keep the top bar in every theme.
+    val rail = Cs.theme == CsTheme.FOCUS && !compact
+    val sidePad = if (compact) 16.dp else if (rail) 36.dp else 48.dp
+    val isTv = remember { ctx.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) }
+    CompositionLocalProvider(LocalCompact provides compact,
+        // TVs: focus rings only, no ripple animations (see NoIndication). Phones keep the touch ripple.
+        androidx.compose.foundation.LocalIndication provides (if (isTv) NoIndication else androidx.compose.foundation.LocalIndication.current)) {
+    Row(Modifier.fillMaxSize()) {
+    if (rail) SideRail(
+        TABS.map { name -> RailEntry(name, RAIL_ICONS[name] ?: "•", name,
+            Modifier.focusRequester(tabFocus.getValue(name)).then(if (name == "Home") Modifier.focusRequester(homeTabFocus) else Modifier)) { tab = name } } +
+            RailEntry("Search", "⌕", "Search", Modifier.focusRequester(tabFocus.getValue("Search"))) { tab = "Search" } +
+            RailEntry("Settings", "⚙", "Settings · ${state.regions.sorted().joinToString("·")}", Modifier.focusRequester(tabFocus.getValue("Settings"))) { tab = "Settings" } +
+            listOfNotNull(updateState.available?.let { u -> RailEntry("Update", "⇩", "Update ${u.version}", Modifier) { tab = "Settings" } }),
+        selected = tab, onFocusChange = { tabBarFocused = it })
+    Column(Modifier.weight(1f).fillMaxHeight()) {
         // ── Top tab bar (scrolls sideways on phones) ──
-        Row(Modifier.fillMaxWidth().onFocusChanged { tabBarFocused = it.hasFocus }
+        if (!rail) Row(Modifier.fillMaxWidth().onFocusChanged { tabBarFocused = it.hasFocus }
             .then(if (compact) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
             .padding(start = sidePad, end = sidePad, top = if (compact) 10.dp else 18.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -310,6 +345,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             when (tab) {
                 "Home" -> HomeScreen(state, upNext, heroFocus, openDetails = vm::select, toggleWatchlist = vm::toggle,
                     continueWatching = streamState.continueWatching,
+                    watchNow = { item -> openWatchNow(item) },
                     onRemoveContinue = { r -> streaming.removeFromContinueWatching(r); scope.launch { delay(800); syncNow() } },
                     onResume = { r -> streaming.resume(r) { rec -> rec.ref()?.let(::openWatchNowFor) } },
                     onResumeDetails = { r -> r.ref()?.let { ref -> vm.selectById(if (ref.type == MediaType.MOVIE) "movie" else "tv", ref.tmdbId) } },
@@ -361,6 +397,7 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
             }
             Text("Movie and TV data provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.", color = Cs.textMuted, fontSize = 12.sp)
         }
+    }
     }
     }
     }
@@ -449,7 +486,8 @@ private fun SettingsScreen(
     onCreateAccount: (String, String) -> Unit, onSignIn: (String, String) -> Unit, onBackupNow: () -> Unit, onRestoreNow: () -> Unit,
     onResetPassword: (String) -> Unit
 ) {
-    Text("Settings", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+    Text("Settings", color = Cs.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Cs.titleFont)
+    CsPanel(Modifier.fillMaxWidth()) { ThemesSection() }
     CsPanel(Modifier.fillMaxWidth()) { AccountSection(social, onCreateAccount, onSignIn, onBackupNow, onRestoreNow, onResetPassword) }
     CsPanel(Modifier.fillMaxWidth()) {
         Text("My Services", color = Cs.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
