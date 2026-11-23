@@ -29,6 +29,14 @@ internal object TorrentRules {
             File(directory, relative).canonicalFile.toPath().startsWith(directory.canonicalFile.toPath())
     }.getOrDefault(false)
 
+    fun readWindow(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList()
+        else (first..minOf(first.toLong() + 3, last.toLong()).toInt()).toList()
+
+    fun startupPieces(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList()
+        else (readWindow(first, last) + listOf(maxOf(first, last - 1), last)).distinct()
+
     fun hasSpace(size: Long, free: Long, pieceLength: Int): Boolean {
         // Leave room for metadata, boundary pieces, and normal app operation. Avoid Long overflow.
         val reserve = 128L * 1024 * 1024 + 2L * pieceLength.coerceAtLeast(0)

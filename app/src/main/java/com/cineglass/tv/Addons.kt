@@ -5,6 +5,8 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 // Add-on registry: existing Archive/YouTube engines plus opt-in Stremio stream discovery.
 // The registry grants capabilities, not copyright permission. HTTPS stream hosts remain restricted;
@@ -122,45 +124,67 @@ object Addons {
         addon.engine == STREMIO && Regex("[0-9a-f]{40}").matches(hash) &&
             (addon.torrentStreams || (addon.realDebrid && hash in addon.authorizedTorrentHashes.orEmpty()))
 
+    private val refreshScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val refreshLock = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var savedRegistryLoaded = false
+
+    /** Read local configuration once; network refresh is not on the discovery critical path. */
+    @Synchronized fun loadSaved(context: Context) {
+        if (savedRegistryLoaded) return
+        val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("registry", null)
+        registry = runCatching {
+            gson.fromJson<List<Addon>>(json, object : TypeToken<List<Addon>>() {}.type).orEmpty().mapNotNull(::sanitize)
+        }.getOrDefault(emptyList())
+        savedRegistryLoaded = true
+    }
+
+    fun refreshInBackground(context: Context) {
+        loadSaved(context)
+        refreshScope.launch { refresh(context.applicationContext) }
+    }
+
     @Volatile private var lastRefreshMs = 0L
 
     /** Loads the cached registry, then refreshes it from GitHub. Failures keep what we had. */
     suspend fun refresh(context: Context, force: Boolean = false): Unit = withContext(Dispatchers.IO) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (!force && lastRefreshMs != 0L && now - lastRefreshMs < 60_000L) return@withContext
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        fun parse(json: String?): List<Addon> = runCatching {
-            gson.fromJson<List<Addon>>(json, object : TypeToken<List<Addon>>() {}.type).orEmpty().mapNotNull(::sanitize)
-        }.getOrDefault(emptyList())
-        registry = parse(prefs.getString("registry", null))
-        runCatching {
-            val url = if (force) "$REGISTRY_URL?refresh=${System.currentTimeMillis()}" else REGISTRY_URL
-            val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-            try {
-                c.connectTimeout = 8000
-                c.readTimeout = 8000
-                if (force) {
-                    c.useCaches = false
-                    c.setRequestProperty("Cache-Control", "no-cache")
+        refreshLock.withLock {
+            loadSaved(context)
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (!force && lastRefreshMs != 0L && now - lastRefreshMs < 60_000L) return@withContext
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            fun parse(json: String?): List<Addon> = runCatching {
+                gson.fromJson<List<Addon>>(json, object : TypeToken<List<Addon>>() {}.type).orEmpty().mapNotNull(::sanitize)
+            }.getOrDefault(emptyList())
+            registry = parse(prefs.getString("registry", null))
+            runCatching {
+                val url = if (force) "$REGISTRY_URL?refresh=${System.currentTimeMillis()}" else REGISTRY_URL
+                val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                try {
+                    c.connectTimeout = 8000
+                    c.readTimeout = 8000
+                    if (force) {
+                        c.useCaches = false
+                        c.setRequestProperty("Cache-Control", "no-cache")
+                    }
+                    check(c.responseCode == 200) { "HTTP ${c.responseCode}" }
+                    val body = c.inputStream.bufferedReader().use { it.readText() }
+                    val list = parse(body)
+                    check(list.isNotEmpty()) { "No valid add-on entries" }
+                    registry = list
+                    prefs.edit().putString("registry", body).apply()
+                    if (force) {
+                        val test = list.firstOrNull { it.id == "cinesays.big-buck-bunny-test" }
+                        android.util.Log.i("CineSaysTorrent", "Refreshed registry. Big Buck Bunny approved hashes: ${test?.authorizedTorrentHashes.orEmpty()}")
+                    }
+                } finally {
+                    c.disconnect()
                 }
-                check(c.responseCode == 200) { "HTTP ${c.responseCode}" }
-                val body = c.inputStream.bufferedReader().use { it.readText() }
-                val list = parse(body)
-                check(list.isNotEmpty()) { "No valid add-on entries" }
-                registry = list
-                prefs.edit().putString("registry", body).apply()
-                if (force) {
-                    val test = list.firstOrNull { it.id == "cinesays.big-buck-bunny-test" }
-                    android.util.Log.i("CineSaysTorrent", "Refreshed registry. Big Buck Bunny approved hashes: ${test?.authorizedTorrentHashes.orEmpty()}")
-                }
-            } finally {
-                c.disconnect()
+            }.onFailure {
+                if (force) android.util.Log.w("CineSaysTorrent", "Registry refresh failed; using saved registry.", it)
             }
-        }.onFailure {
-            if (force) android.util.Log.w("CineSaysTorrent", "Registry refresh failed; using saved registry.", it)
+            lastRefreshMs = android.os.SystemClock.elapsedRealtime()
+            Unit
         }
-        lastRefreshMs = android.os.SystemClock.elapsedRealtime()
-        Unit
     }
 
     /** User's on/off choices; add-ons they never touched follow [Addon.defaultOn]. */

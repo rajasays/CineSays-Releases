@@ -3,9 +3,6 @@ package com.cineglass.tv
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -113,19 +110,22 @@ object StreamRepository {
         synchronized(addonProviders) { addonProviders.clear() }
     }
 
-    suspend fun search(context: Context, ref: MediaRef, force: Boolean = false): StreamSearch {
-        val cacheKey = "${ref.key}:${ref.stremioId.orEmpty()}"
+    suspend fun search(context: Context, ref: MediaRef, force: Boolean = false,
+                       onPartial: (StreamSearch) -> Unit = {}): StreamSearch {
+        Addons.loadSaved(context)
+        val cacheKey = "${ref.key}:${ref.stremioId.orEmpty()}:${Addons.enabled(context)}"
         if (!force) synchronized(cache) { cache[cacheKey]?.takeIf { System.currentTimeMillis() - it.first < CACHE_MS }?.let { return it.second } }
         if (force) clearCache()
-        Addons.refresh(context, force = force)
-        val results = coroutineScope {
-            providers(context).map { p ->
-                async {
-                    val r = runCatching { withTimeoutOrNull(PER_PROVIDER_TIMEOUT_MS) { p.streamsFor(ref) } }
-                    p.name to r.fold(onSuccess = { it?.let { s -> Result.success(s) } ?: Result.failure(java.io.IOException("Timed out")) },
-                        onFailure = { e -> if (e is kotlinx.coroutines.CancellationException) throw e; Result.failure(e) })
-                }
-            }.awaitAll()
+        if (force) Addons.refresh(context, force = true) else Addons.refreshInBackground(context)
+        val results = collectProgressively(providers(context).map { p ->
+            suspend {
+                val r = runCatching { withTimeoutOrNull(PER_PROVIDER_TIMEOUT_MS) { p.streamsFor(ref) } }
+                p.name to r.fold(onSuccess = { it?.let { s -> Result.success(s) } ?: Result.failure(java.io.IOException("Timed out")) },
+                    onFailure = { e -> if (e is kotlinx.coroutines.CancellationException) throw e; Result.failure(e) })
+            }
+        }) { completed ->
+            onPartial(StreamSearch(completed.flatMap { it.second.getOrNull().orEmpty() },
+                completed.mapNotNull { (n, r) -> r.exceptionOrNull()?.let { n to friendly(it) } }.toMap()))
         }
         val streams = results.flatMap { it.second.getOrNull().orEmpty() }
         val failures = results.mapNotNull { (n, r) -> r.exceptionOrNull()?.let { n to friendly(it) } }.toMap()

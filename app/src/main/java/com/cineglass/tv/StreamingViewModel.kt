@@ -226,7 +226,15 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
             if (_state.value.watchNow?.selected?.key != ref.key) return@launch
             _state.update { s -> s.copy(watchNow = s.watchNow?.let { w -> w.copy(
                 base = w.base.copy(imdbId = resolved.imdbId), selected = resolved) }) }
-            val found = StreamRepository.search(app, resolved, force)
+            val found = StreamRepository.search(app, resolved, force) { partial ->
+                val current = _state.value.watchNow
+                if (current?.selected?.key == ref.key) {
+                    val choices = PlaybackRouter.options(resolved, partial, current.services, current.myServiceIds,
+                        _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+                        .filterNot { it is WatchAction.Unavailable }
+                    _state.update { state -> state.copy(watchNow = state.watchNow?.copy(search = partial, options = choices)) }
+                }
+            }
             val result = lookupError?.let { found.copy(failures = found.failures + ("Title lookup" to it)) } ?: found
             val w = _state.value.watchNow ?: return@launch
             if (w.selected?.key != ref.key) return@launch
