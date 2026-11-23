@@ -27,3 +27,11 @@ Eliminate the requirement for TorrServer, Tailscale, external PCs and paid debri
 5. Verify release signing and version migration. Do not publish v1.8.8 until verified.
 
 Published v1.8.7 and v1.8.6 remain untouched.
+
+## Torrentio buffering improvements (follow-up)
+- Adaptive read-ahead window targets approximately 8 MiB of upcoming torrent pieces (bounded to 4–16 pieces to limit requests on weak swarms), replacing the same four-piece window for every torrent.
+- Nearby piece deadlines are spaced more closely (125 ms rather than 250 ms), while preserving bounded window and file-index checks.
+- HTTP GET waits for the first verified torrent piece before sending a successful 200/206 response. If it times out before headers, it returns HTTP 503 rather than an incomplete successful response.
+- Regression coverage added for small/large piece sizes, end-of-file and integer boundaries.
+- These changes may improve playback smoothness when sources have enough peers; they do not change peer availability, codecs, rights checks or device storage requirements.
+- Rebuild and compare Torrentio buffering with the previous v1.8.8 build; WebTorrent MP4 seek/play/pause and direct streaming are regression checks.
