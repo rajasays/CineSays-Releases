@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -991,6 +992,18 @@ fun PlaybackSettingsSection(prefs: PlaybackPrefs, stremioInstalled: Boolean, str
     Choice("Preferred source", listOf("direct" to "Direct HLS / MP4 first", "torrent" to "Torrent first"), prefs.preferredSource) { v -> onChange { it.copy(preferredSource = v) } }
     Choice("Progressive torrent streaming", listOf("true" to "Enabled", "false" to "Disabled"), prefs.progressiveTorrentStreaming.toString()) { v -> onChange { it.copy(progressiveTorrentStreaming = v.toBoolean()) } }
     Choice("Authorized torrent-to-HTTP", listOf("true" to "Enabled when configured", "false" to "Disabled"), prefs.authorizedTorrentToHttpPlayback.toString()) { v -> onChange { it.copy(authorizedTorrentToHttpPlayback = v.toBoolean()) } }
+    OutlinedTextField(
+        value = prefs.torrServerUrl,
+        onValueChange = { value -> onChange { it.copy(torrServerUrl = value.trim().take(240)) } },
+        label = { Text("Self-hosted TorrServer HTTPS address") },
+        placeholder = { Text("https://myserver.my-tailnet.ts.net") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth())
+    val gatewayReady = TorrServerGateway.normalizedBase(prefs.torrServerUrl) != null
+    Text(
+        if (gatewayReady) "Home gateway configured. It is used only when you select a permitted torrent source."
+        else "Optional: enter your private Tailscale HTTPS address (.ts.net). Local progressive torrent playback remains the fallback.",
+        color = Cs.textSoft, fontSize = 13.sp)
 
     Text("Stremio: " + if (stremioInstalled) "installed. “Open in Stremio” appears in Watch Now." else "not installed.", color = Cs.textSoft, fontSize = 14.sp)
     Text("Streaming sources", color = Cs.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
