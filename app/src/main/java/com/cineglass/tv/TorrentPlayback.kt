@@ -109,7 +109,8 @@ class TorrentPlayback private constructor(
             val partial = queue.firstOrNull { it.pieceIndex() == waitingPiece }
             val state = if (handle.havePiece(waitingPiece)) "verified"
                 else if (partial != null) "partial" else "not_in_partial_queue"
-            Log.i("CineSaysTorrent", "piece_diagnostic piece=$waitingPiece state=$state advertisedPeers=${advertised ?: -1} " +
+            val actualPriority = handle.piecePriority(waitingPiece)
+            Log.i("CineSaysTorrent", "piece_diagnostic piece=$waitingPiece state=$state advertisedPeers=${advertised ?: -1} priority=${actualPriority.name} " +
                 "finishedBlocks=${partial?.finished() ?: -1} writingBlocks=${partial?.writing() ?: -1} " +
                 "requestedBlocks=${partial?.requested() ?: -1} totalBlocks=${partial?.blocksInPiece() ?: -1} " +
                 "queueEntries=${queue.size}")
@@ -380,8 +381,13 @@ class TorrentPlayback private constructor(
                             throw TorrentPreparationException("Not enough free device storage for this video. Choose a smaller source or free some space.")
                         }
                         handle.prioritizeFiles(Array(info.numFiles()) { if (it == index) Priority.NORMAL else Priority.IGNORE })
-                        handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
+                        // A fixed sequential picker competes with Media3 seeks and
+                        // our explicit, sliding piece deadlines. Let the deadline
+                        // window control streaming while keeping the selected-file
+                        // priorities unchanged.
+                        handle.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
                         handle.unsetFlags(TorrentFlags.UPLOAD_MODE)
+                        Log.i("CineSaysTorrent", "scheduler_mode deadline_window sequential=false")
                         // Start headers and a possible end-of-file MP4 index concurrently.
                         val firstPiece = (files.fileOffset(index) / info.pieceLength()).toInt()
                         val lastPiece = ((files.fileOffset(index) + size - 1) / info.pieceLength()).toInt()
