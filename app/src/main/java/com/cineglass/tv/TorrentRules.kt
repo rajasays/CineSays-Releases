@@ -49,6 +49,20 @@ internal object TorrentRules {
             .map { it.toInt() }
     }
 
+    /**
+     * Container parsers may probe the end of a large file for an MP4 index while
+     * playback consumes its beginning. Keep the playback window anchored when
+     * that independent tail probe occurs; the tail piece gets its own deadline.
+     */
+    fun isTailProbe(requestedPiece: Int, firstPiece: Int, lastPiece: Int, playbackPiece: Int): Boolean =
+        lastPiece - firstPiece > 16 &&
+            playbackPiece in firstPiece..(firstPiece.toLong() + 8).coerceAtMost(lastPiece.toLong()).toInt() &&
+            requestedPiece >= lastPiece - 2
+
+    /** Only ask for an extra startup piece when its time budget is bounded. */
+    fun startupWarmupPieces(first: Int, last: Int): List<Int> =
+        if (first < 0 || last < first) emptyList() else listOf(first, minOf(first.toLong() + 1, last.toLong()).toInt()).distinct()
+
     fun startupPieces(first: Int, last: Int): List<Int> =
         if (first < 0 || last < first) emptyList()
         else (readWindow(first, last) + listOf(maxOf(first, last - 1), last)).distinct()
