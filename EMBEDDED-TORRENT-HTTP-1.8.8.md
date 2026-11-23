@@ -97,3 +97,26 @@ The scheduler test on 2026-11-23 showed initial piece 0 in 3.5 s but two bufferi
 - No UI, provider registry, remote endpoints, source authorization rules, or timeout changes.
 
 The new code has **not yet been built or tested**. Keep the PR in draft pending compile, unit tests, WebTorrent playback and seek regression, and side-by-side Torrentio test. Capture `adb logcat -d -v time -s CineSaysTorrent:V` after testing. If repeated piece timeouts continue, compare another authorized torrent with a different swarm before modifying the scheduler again.
+
+## Piece availability and partial-block diagnostic pass
+
+The latest captured playback log showed piece 0 timing out twice and piece 210 repeatedly timing out even when 68–139 peers were connected and download throughput exceeded 5 MiB/s. The scheduler changes alone did not solve it. This commit adds **observability only**, not another timeout or scheduling modification.
+
+While a requested video piece is stalled for at least two seconds, at most every five seconds per torrent session, `CineSaysTorrent` now reports:
+- `peer_status` (existing peers, total KiB/s and ready-ahead verified piece count).
+- `piece_diagnostic` with the actual waiting piece index; `state=verified|partial|not_in_partial_queue`; `advertisedPeers` (connected peers advertising this piece per libtorrent); `finishedBlocks`, `writingBlocks`, `requestedBlocks`, `totalBlocks`, and queue entry count.
+- `-1` for block fields means there was no entry for that piece in libtorrent's partial download queue; it does **not** mean that no peer has the piece or that no block exists.
+- `advertisedPeers=0` means none of the queried connected peers reported the piece in that snapshot; it does not prove it is unavailable across the global swarm.
+- Diagnostic native queries use `TorrentHandle.pieceAvailability()` and `getDownloadQueue()` from the project's jlibtorrent 2.0.12.9 dependency and run on the existing blocking torrent read worker, not the UI thread. The operation is rate limited and errors are caught.
+
+To validate:
+```powershell
+cd D:\Projects\CineSays
+git switch feature/embedded-torrent-http-1.8.8
+git pull origin feature/embedded-torrent-http-1.8.8
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+adb logcat -c
+# Play a torrent the user is authorized to use and reproduce buffering.
+adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-piece-diagnostics.log
+```
+Compare the same source and another **independently seeded, authorized torrent**. Do not release until compile and device regressions pass. No content authorization, source-discovery, UI, playback deadlines, or player behavior changed in this diagnostic pass.
