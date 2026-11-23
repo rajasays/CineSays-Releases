@@ -80,7 +80,11 @@ class TorrentPlayback private constructor(
         lastPeerDiagnosticsAt = now
         runCatching {
             val status = handle.status()
-            Log.i("CineSaysTorrent", "peer_status peers=${status.numPeers()} downloadKiBps=${status.downloadRate() / 1024} pieceBytes=$pieceLength")
+            val ahead = if (requestedPiece >= 0) {
+                TorrentRules.adaptiveReadWindow(requestedPiece, lastFilePiece, pieceLength)
+                    .takeWhile { handle.havePiece(it) }.size
+            } else 0
+            Log.i("CineSaysTorrent", "peer_status peers=${status.numPeers()} downloadKiBps=${status.downloadRate() / 1024} pieceBytes=$pieceLength readyAheadPieces=$ahead")
         }.onFailure { Log.w("CineSaysTorrent", "peer_status unavailable: ${it.javaClass.simpleName}") }
     }
 
