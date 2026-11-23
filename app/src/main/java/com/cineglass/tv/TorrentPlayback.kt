@@ -278,6 +278,8 @@ class TorrentPlayback private constructor(
         /** Run on an IO dispatcher, after checking that the source is still enabled. */
         internal suspend fun prepare(context: Context, torrent: DebridTorrent): TorrentPlayback {
             require(supportsDirectTorrent(torrent))
+            val preparationStartedAt = SystemClock.elapsedRealtime()
+            Log.i("CineSaysTorrent", "timing_prepare_start trackers=${torrent.trackers.size}")
             val directory = java.nio.file.Files.createTempDirectory(context.cacheDir.toPath(), "torrent-playback-").toFile()
             var manager: SessionManager? = null
             try {
@@ -301,6 +303,7 @@ class TorrentPlayback private constructor(
                 } else null
                 currentCoroutineContext().ensureActive()
                 session.start()
+                val downloadAddedAt = SystemClock.elapsedRealtime()
                 if (descriptor != null) session.download(descriptor, directory, null, null, null, TorrentFlags.UPLOAD_MODE)
                 else session.download(torrent.magnetUri(), directory, TorrentFlags.UPLOAD_MODE)
                 val hash = Sha1Hash(torrent.hash)
@@ -311,6 +314,8 @@ class TorrentPlayback private constructor(
                     val handle = session.find(hash)
                     val info = handle?.torrentFile()
                     if (handle != null && info != null) {
+                        val metadataAt = SystemClock.elapsedRealtime()
+                        Log.i("CineSaysTorrent", "timing_metadata sinceAddMs=${metadataAt - downloadAddedAt} pieceBytes=${info.pieceLength()}")
                         val files = info.files()
                         val indexes = 0 until info.numFiles()
                         val index = TorrentRules.selectVideo(indexes.map { files.filePath(it) },
@@ -366,6 +371,7 @@ class TorrentPlayback private constructor(
                         handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
                         handle.resume()
                         Log.i("CineSaysTorrent", "scheduler_mode live_read_demands sequential=false")
+                        Log.i("CineSaysTorrent", "timing_prepare_ready totalMs=${SystemClock.elapsedRealtime() - preparationStartedAt}")
                         // Readers schedule headers, indexes and resume positions on demand.
                         // Do not leave startup deadlines competing with a later seek.
                         return TorrentPlayback(session, directory, handle, path, size, files.fileOffset(index), info.pieceLength())

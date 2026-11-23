@@ -127,13 +127,32 @@ fun NativePlayerScreen(
 
     DisposableEffect(player) {
         val torrentDiagnostics = playback.torrent != null
+        val playerObservedAt = SystemClock.elapsedRealtime()
+        var firstFrameLogged = false
         var bufferingStartedAt = 0L
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
                 error = describePlaybackError(e); report()
             }
-            override fun onRenderedFirstFrame() { firstFrameRendered = true }
+            override fun onRenderedFirstFrame() {
+                firstFrameRendered = true
+                if (torrentDiagnostics && !firstFrameLogged) {
+                    firstFrameLogged = true
+                    Log.i("CineSaysTorrent", "timing_first_frame sincePlayerAttachMs=${SystemClock.elapsedRealtime() - playerObservedAt} positionMs=${player.currentPosition}")
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (torrentDiagnostics && reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    Log.i("CineSaysTorrent", "timing_seek fromMs=${oldPosition.positionMs} targetMs=${newPosition.positionMs}")
+                }
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
                 loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE
                 if (torrentDiagnostics) {
