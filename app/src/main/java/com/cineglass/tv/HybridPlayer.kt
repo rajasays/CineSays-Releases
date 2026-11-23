@@ -450,20 +450,45 @@ private fun FullScreenPlayback() {
 @Composable
 internal fun TorrentLoadingCard(title: String, poster: String?, status: String,
     modifier: Modifier = Modifier) {
-    Column(modifier.widthIn(max = 440.dp).background(Color.Black.copy(alpha = .88f), RoundedCornerShape(20.dp))
-        .padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val motion = androidx.compose.animation.core.rememberInfiniteTransition(label = "torrent loading")
+    val glow = motion.animateFloat(
+        initialValue = .22f,
+        targetValue = .62f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(1150),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "poster glow"
+    )
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier.widthIn(max = 440.dp).background(
+            Brush.verticalGradient(listOf(Cs.panel, Color.Black.copy(alpha = .96f))), shape
+        ).border(1.dp, Cs.line, shape).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         poster?.takeIf { it.isNotBlank() }?.let { path ->
-            AsyncImage(model = if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/w342$path",
-                contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.size(112.dp, 168.dp).clip(RoundedCornerShape(10.dp)))
+            val posterShape = RoundedCornerShape(12.dp)
+            Box(Modifier.size(112.dp, 168.dp).clip(posterShape)) {
+                AsyncImage(
+                    model = if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/w342$path",
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(Modifier.matchParentSize().graphicsLayer { alpha = glow.value }
+                    .border(2.dp, Cs.accent, posterShape))
+            }
         }
         Text(title, color = Cs.text, fontSize = 21.sp, fontWeight = FontWeight.Bold,
             maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
-            Text(status, color = Cs.textSoft, fontSize = 14.sp)
-        }
+        androidx.compose.material3.LinearProgressIndicator(
+            modifier = Modifier.width(132.dp).clip(RoundedCornerShape(8.dp)),
+            color = Cs.accent,
+            trackColor = Cs.line
+        )
+        Text(status, color = Cs.textSoft, fontSize = 14.sp)
     }
 }
 
