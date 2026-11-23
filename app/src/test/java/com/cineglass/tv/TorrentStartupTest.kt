@@ -97,6 +97,49 @@ class TorrentStartupTest {
         assertTrue(TorrentHealthRules.message(10, 8, 2, 20).contains("may resume"))
     }
 
+    @Test fun farSeekTakesOwnershipWithoutOldReaderReclaimingIt() {
+        assertTrue(TorrentRules.isSeekJump(310, 1, 0, 1024))
+        assertTrue(TorrentRules.isSeekJump(20, 400, 0, 1024))
+        assertFalse(TorrentRules.isSeekJump(10, 1, 0, 1024))
+        assertFalse(TorrentRules.isSeekJump(1024, 1, 0, 1024))
+        assertFalse(TorrentRules.isSeekJump(1025, 1, 0, 1024))
+        val owners = TorrentPriorityOwners()
+        owners.enter(1)
+        owners.enter(2)
+        owners.enter(3, eligible = false)
+        assertTrue(owners.promote(2))
+        assertEquals(2, owners.primary)
+        assertFalse(owners.canPromote(1))
+        assertFalse(owners.promote(1))
+        assertFalse(owners.promote(3))
+        assertFalse(owners.leave(1))
+        assertTrue(owners.leave(2))
+        assertNull(owners.primary)
+        owners.enter(4)
+        assertEquals(4, owners.primary)
+    }
+
+    @Test fun waitingPieceExtendsOnlyWhileItsOwnBlocksProgress() {
+        val start = 100_000L
+        val budget = TorrentPieceWaitBudget(start)
+        assertFalse(budget.expired(start + 24_999))
+        assertTrue(budget.expired(start + 25_000)) // no piece progress
+        val progressing = TorrentPieceWaitBudget(start)
+        progressing.observe(start + 20_000, 60)
+        assertTrue(progressing.extended(start + 25_000))
+        progressing.observe(start + 28_000, 90)
+        assertTrue(progressing.extended(start + 33_000))
+        assertTrue(progressing.expired(start + 38_000)) // 10s without progress
+        val capped = TorrentPieceWaitBudget(start)
+        capped.observe(start + 24_000, 4)
+        capped.observe(start + 32_000, 8)
+        capped.observe(start + 40_000, 12)
+        capped.observe(start + 48_000, 16)
+        capped.observe(start + 56_000, 20)
+        assertFalse(capped.expired(start + 59_999))
+        assertTrue(capped.expired(start + 60_000))
+    }
+
     @Test fun readAheadIsBoundedAtEndAndIntegerLimit() {
         assertEquals(listOf(98, 99), TorrentRules.readWindow(98, 99))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
