@@ -142,3 +142,23 @@ git pull origin feature/embedded-torrent-http-1.8.8
 Install the new debug APK. Confirm the problematic source exposes a helpful warning and **Other sources** button after 15s; that returning to Watch Now retains the selected episode, available choices and D-pad focus; test a playable Torrentio source, WebTorrent Bunny and regular HLS/MP4 streams for regressions. Run `adb logcat -c` before testing and `adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-health-test.log` afterward.
 
 **This change is not yet locally compiled or device tested.** Preserve the draft PR until tests pass.
+
+## Focused scheduler configuration trial — deadline window vs global sequential (2026-11-23)
+
+Latest health log contains repeated incomplete piece-0 reads even with connected peers advertising piece 0, including sessions where it was absent from libtorrent's active partial queue. Code review showed a potentially competing strategy: `TorrentFlags.SEQUENTIAL_DOWNLOAD` enabled at the same time as explicit per-piece playback deadlines, seeking, and resettable priority windows.
+
+**One reversible configuration change:** explicitly disable `SEQUENTIAL_DOWNLOAD` after selecting and prioritizing the approved video file, leaving `setPieceDeadline`, selected-file priorities, 25-second piece timeout, source authorization and UI unchanged. New startup log: `scheduler_mode deadline_window sequential=false`. `piece_diagnostic` now includes the effective `priority` returned by `TorrentHandle.piecePriority(piece)`, allowing a future trace to differentiate normal/ignored file pieces from scheduling stalls.
+
+This is a **hypothesis test, not a verified performance fix**. Global sequential mode is useful for some torrents, but conflicts with the app's desire to jump to arbitrary seek positions. An individual source with poor peers may still fail. Avoid making other scheduling changes until a controlled test compares outcomes.
+
+### Validation
+```powershell
+cd D:\Projects\CineSays
+git switch feature/embedded-torrent-http-1.8.8
+git pull origin feature/embedded-torrent-http-1.8.8
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+adb logcat -c
+# Install, play the same authorized title, try a known-good torrent and Big Buck Bunny; test seeking.
+adb logcat -d -v time -s CineSaysTorrent:V > D:\Projects\CineSays\torrent-deadline-mode-test.log
+```
+Confirm `scheduler_mode deadline_window sequential=false` appears, compare piece-0 completion and request block movement and flag any `priority=IGNORE` for the selected video. Keep PR #4 draft until successful build and on-device regressions.
