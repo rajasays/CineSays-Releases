@@ -841,9 +841,8 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
             }
         }
 
-        // Other Sources: kept exactly as built (card content unchanged), only placed under a matching heading.
+        // Preserve the discovery order within Other Sources.
         val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>()
-            .sortedBy { SourceDetails.sizeForSorting(it.stream) ?: Long.MAX_VALUE }
         if (torrents.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Other Sources", torrents.size)
             torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true) { onAction(a) } }

@@ -302,7 +302,7 @@ class TorrentPlayback private constructor(
                 currentCoroutineContext().ensureActive()
                 session.start()
                 if (descriptor != null) session.download(descriptor, directory, null, null, null, TorrentFlags.UPLOAD_MODE)
-                else session.download("magnet:?xt=urn:btih:${torrent.hash}", directory, TorrentFlags.UPLOAD_MODE)
+                else session.download(torrent.magnetUri(), directory, TorrentFlags.UPLOAD_MODE)
                 val hash = Sha1Hash(torrent.hash)
                 val expectedName = if (torrent.hash == TEST_HASH && torrent.filename == LEGACY_TEST_FILENAME)
                     TEST_FILENAME else torrent.filename
