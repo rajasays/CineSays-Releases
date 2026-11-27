@@ -1,3 +1,14 @@
+## CineSays 1.8.7 — Free streaming update (2026-11-23)
+
+- Prioritize playable direct HLS, DASH, and MP4 sources in Watch Now.
+- Add optional free self-hosted TorrServer torrent-to-HTTP playback over private Tailscale HTTPS.
+- Keep local progressive torrent playback as fallback if the home server is unreachable.
+- Remove Premiumize and Real-Debrid paid API clients, credentials, and integration flags.
+- Preserve Trakker, Friends, Watchlist, themes, Android TV remote navigation, and existing content discovery.
+- Correct curated torrent-only add-on validation; the development branch unit tests and debug build were reported successful in Android Studio.
+
+Note: The self-hosted server must be configured separately. Direct torrent playback still requires peers and may buffer. No paid playback subscription is required.
+
 ## 2026-11-23 — Source discovery and torrent startup
 
 Show provider results as they arrive, remove normal registry refresh from the critical path, and preserve bounded read-ahead with startup header/index priorities. See SOURCE-STARTUP-UPDATE.md for complete changes and verification limits.

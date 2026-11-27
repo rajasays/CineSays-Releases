@@ -230,7 +230,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
                 val current = _state.value.watchNow
                 if (current?.selected?.key == ref.key) {
                     val choices = PlaybackRouter.options(resolved, partial, current.services, current.myServiceIds,
-                        _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+                        _state.value.stremioInstalled, _state.value.prefs.maxHeight, _state.value.prefs.preferredSource)
                         .filterNot { it is WatchAction.Unavailable }
                     _state.update { state -> state.copy(watchNow = state.watchNow?.copy(search = partial, options = choices)) }
                 }
@@ -239,7 +239,7 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
             val w = _state.value.watchNow ?: return@launch
             if (w.selected?.key != ref.key) return@launch
             // Service offers are per title (TMDB doesn't list per-episode availability).
-            val routed = PlaybackRouter.options(resolved, result, w.services, w.myServiceIds, _state.value.stremioInstalled, _state.value.prefs.maxHeight)
+            val routed = PlaybackRouter.options(resolved, result, w.services, w.myServiceIds, _state.value.stremioInstalled, _state.value.prefs.maxHeight, _state.value.prefs.preferredSource)
             val options = if (lookupError != null && routed.singleOrNull() is WatchAction.Unavailable)
                 listOf(WatchAction.Unavailable(lookupError!!)) else routed
             _state.update { s -> s.copy(watchNow = s.watchNow?.copy(searching = false, search = result, options = options)) }
@@ -285,6 +285,24 @@ class StreamingViewModel(private val app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(preparing = true) }
             val pending = java.util.concurrent.atomic.AtomicReference<TorrentPlayback>()
             try {
+                // A configured, approved gateway can return a regular HTTPS stream for this exact torrent.
+                // No gateway is enabled by default; the existing piece-aware engine remains the fallback.
+                val prefs = _state.value.prefs
+                val approvedGatewayUrl = TorrServerGateway.normalizedBase(prefs.torrServerUrl)
+                AuthorizedTorrentHttp.configure(if (prefs.authorizedTorrentToHttpPlayback && approvedGatewayUrl != null)
+                    TorrServerGateway(approvedGatewayUrl) else null)
+                val httpStream = if (prefs.authorizedTorrentToHttpPlayback)
+                    withContext(Dispatchers.IO) { AuthorizedTorrentHttp.resolve(stream, ref) }
+                    else null
+                if (httpStream != null) {
+                    if (_state.value.watchNow?.selected?.key == ref.key)
+                        startNative(httpStream, ref, item, saveUrl = false)
+                    return@launch
+                }
+                if (!_state.value.prefs.progressiveTorrentStreaming) {
+                    _state.update { it.copy(message = "Progressive torrent playback is disabled in Settings.") }
+                    return@launch
+                }
                 withContext(Dispatchers.IO) { pending.set(TorrentPlayback.prepare(app, torrent)) }
                 if (_state.value.watchNow?.selected?.key != ref.key) return@launch
                 val source = requireNotNull(pending.getAndSet(null))

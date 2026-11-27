@@ -30,7 +30,6 @@ data class Addon(
     /** stremio: the only hosts its streams (and subtitles) may come from. */
     val allowedHosts: List<String>? = null,
     /** Opt-in for a curated add-on whose torrent results are authorized for playback. */
-    val realDebrid: Boolean = false,
     val authorizedTorrentHashes: List<String>? = null,
     /** Explicit registry opt-in to discover torrent results without a per-title hash list.
      * This is a capability setting, not a statement about a title's licence. */
@@ -109,12 +108,12 @@ object Addons {
                 val m = a.manifestUrl?.trim()?.takeIf { it.endsWith("/manifest.json") && StreamUrls.isHttps(it) } ?: return null
                 // Bare domains only (no wildcards, IPs or paths); without any, nothing from it could play.
                 val hosts = a.allowedHosts.orEmpty().map { it.trim().lowercase() }.filter { HOST.matches(it) }
-                if (hosts.isEmpty() && !a.torrentStreams) return null
                 val hashes = a.authorizedTorrentHashes.orEmpty().map { it.trim().lowercase() }
                     .filter { it.matches(Regex("[0-9a-f]{40}")) }.distinct()
-                if (a.realDebrid && hashes.isEmpty() && !a.torrentStreams) return null
+                // A hash-curated add-on can offer approved torrents without HTTP stream hosts.
+                if (hosts.isEmpty() && !a.torrentStreams && hashes.isEmpty()) return null
                 a.copy(manifestUrl = m, allowedHosts = hosts, query = null, channels = null,
-                    defaultOn = a.defaultOn && !a.realDebrid && !a.torrentStreams, authorizedTorrentHashes = hashes)
+                    defaultOn = a.defaultOn && hashes.isEmpty() && !a.torrentStreams, authorizedTorrentHashes = hashes)
             }
             else -> null
         }
@@ -122,7 +121,7 @@ object Addons {
 
     fun permitsTorrent(addon: Addon, hash: String): Boolean =
         addon.engine == STREMIO && Regex("[0-9a-f]{40}").matches(hash) &&
-            (addon.torrentStreams || (addon.realDebrid && hash in addon.authorizedTorrentHashes.orEmpty()))
+            (addon.torrentStreams || hash in addon.authorizedTorrentHashes.orEmpty())
 
     private val refreshScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     private val refreshLock = kotlinx.coroutines.sync.Mutex()

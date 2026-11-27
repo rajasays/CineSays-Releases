@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -987,10 +988,26 @@ fun PlaybackSettingsSection(prefs: PlaybackPrefs, stremioInstalled: Boolean, str
         PlaybackDestination.SERVICE.name to "My streaming service"), prefs.destination.name) { v -> onChange { it.copy(destination = PlaybackDestination.valueOf(v)) } }
     Choice("Count as watched at", listOf("80" to "80%", "90" to "90%", "95" to "95%"), Math.round(prefs.completeAt * 100).toString()) { v -> onChange { it.copy(completeAt = v.toInt() / 100.0) } }
     Choice("Buffering", listOf("standard" to "Standard", "large" to "More buffer (unsteady internet)"), prefs.buffering) { v -> onChange { it.copy(buffering = v) } }
+    Text("Source discovery: when opening Watch Now for a movie or choosing an episode.", color = Cs.textSoft, fontSize = 13.sp)
+    Choice("Preferred source", listOf("direct" to "Direct HLS / MP4 first", "torrent" to "Torrent first"), prefs.preferredSource) { v -> onChange { it.copy(preferredSource = v) } }
+    Choice("Progressive torrent streaming", listOf("true" to "Enabled", "false" to "Disabled"), prefs.progressiveTorrentStreaming.toString()) { v -> onChange { it.copy(progressiveTorrentStreaming = v.toBoolean()) } }
+    Choice("Authorized torrent-to-HTTP", listOf("true" to "Enabled when configured", "false" to "Disabled"), prefs.authorizedTorrentToHttpPlayback.toString()) { v -> onChange { it.copy(authorizedTorrentToHttpPlayback = v.toBoolean()) } }
+    OutlinedTextField(
+        value = prefs.torrServerUrl,
+        onValueChange = { value -> onChange { it.copy(torrServerUrl = value.trim().take(240)) } },
+        label = { Text("Self-hosted TorrServer HTTPS address") },
+        placeholder = { Text("https://myserver.my-tailnet.ts.net") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth())
+    val gatewayReady = TorrServerGateway.normalizedBase(prefs.torrServerUrl) != null
+    Text(
+        if (gatewayReady) "Home gateway configured. It is used only when you select a permitted torrent source."
+        else "Optional: enter your private Tailscale HTTPS address (.ts.net). Local progressive torrent playback remains the fallback.",
+        color = Cs.textSoft, fontSize = 13.sp)
 
     Text("Stremio: " + if (stremioInstalled) "installed. “Open in Stremio” appears in Watch Now." else "not installed.", color = Cs.textSoft, fontSize = 14.sp)
     Text("Streaming sources", color = Cs.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    val sourceNote = if (streamAddons.any { it.first.torrentStreams || it.first.realDebrid })
+    val sourceNote = if (streamAddons.any { it.first.torrentStreams || it.first.authorizedTorrentHashes.orEmpty().isNotEmpty() })
         " Torrent sources appear in Watch Now. Use content you are authorized to access; direct torrents use device storage and upload to peers."
         else " Enable additional sources under Add-ons."
     Text("In-app sources include public-domain and openly licensed films (Internet Archive)" +

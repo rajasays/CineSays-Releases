@@ -78,8 +78,8 @@ class StremioAddonProvider(private val addon: Addon, private val http: OkHttpCli
         if (!m.servesStreams(type, mediaId)) return@withContext emptyList()
         val json = get(StremioProtocol.streamUrl(base, type, mediaId)) ?: return@withContext emptyList()
         StremioProtocol.parseStreams(json, addon.id, addon.name, addon.allowedHosts.orEmpty(),
-            if (addon.realDebrid) addon.authorizedTorrentHashes.orEmpty().toSet() else emptySet(),
-            allowTorrentStreams = addon.torrentStreams, allowDebrid = addon.realDebrid)
+            addon.authorizedTorrentHashes.orEmpty().toSet(),
+            allowTorrentStreams = addon.torrentStreams)
     }
 }
 

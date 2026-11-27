@@ -53,6 +53,20 @@ class PlaybackRulesTest {
         assertTrue(opts.last() is WatchAction.OpenStremio)
     }
 
+    @Test fun directFirstWhenTorrentAvailable() {
+        val torrent = PlayableStream("approved", "Approved", "torrent", null, StreamKind.TORRENT,
+            debridTorrent = DebridTorrent("0123456789abcdef0123456789abcdef01234567", null, "video.mp4", directPlayback = true))
+        val search = StreamSearch(listOf(torrent, native("mp4")))
+        val direct = PlaybackRouter.options(movie, search, emptyList(), emptySet(), false,
+            preferredSource = "direct")
+        assertTrue(direct.first() is WatchAction.PlayNative)
+        assertTrue(direct[1] is WatchAction.PlayTorrent)
+        val torrentPreferred = PlaybackRouter.options(movie, search, emptyList(), emptySet(), false,
+            preferredSource = "torrent")
+        assertTrue(torrentPreferred.first() is WatchAction.PlayTorrent)
+        assertTrue(torrentPreferred[1] is WatchAction.PlayNative)
+    }
+
     @Test fun stremioOnlyWhenInstalledAndIdKnown() {
         val none = StreamSearch()
         assertTrue(PlaybackRouter.options(movie, none, emptyList(), emptySet(), stremioInstalled = false).single() is WatchAction.Unavailable)

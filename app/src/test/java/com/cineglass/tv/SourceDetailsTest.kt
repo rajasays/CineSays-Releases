@@ -6,7 +6,7 @@ import org.junit.Test
 class SourceDetailsTest {
     private fun parse(description: String, hints: String = "") = StremioProtocol.parseStreams(
         """{"streams":[{"name":"Torrentio 1080p","description":"$description","infoHash":"11ea02584fa6351956f35671962ab46354d99060"$hints}]}""",
-        "torrentio", "Torrentio", emptyList(), allowTorrentStreams = true, allowDebrid = false).single()
+        "torrentio", "Torrentio", emptyList(), allowTorrentStreams = true).single()
 
     @Test fun reportsSizeContainerCodecAndLanguages() {
         val summary = SourceDetails.summary(parse("Movie.1080p.HEVC.DDP5.1.mkv 💾 1.51 GB 🇬🇧 Hindi"))
