@@ -45,8 +45,16 @@ data class SubtitleTrack(val url: String, val language: String?, val label: Stri
 
 data class DebridTorrent(
     val hash: String, val fileIndex: Int?, val filename: String?,
-    val directPlayback: Boolean = false, val debridPlayback: Boolean = true
-)
+    val directPlayback: Boolean = false, val debridPlayback: Boolean = true,
+    val trackers: List<String> = emptyList()
+) {
+    internal fun magnetUri(): String = buildString {
+        append("magnet:?xt=urn:btih:").append(hash)
+        for (tracker in trackers) {
+            append("&tr=").append(java.net.URLEncoder.encode(tracker, "UTF-8"))
+        }
+    }
+}
 
 /**
  * One source a provider found. Only facts the provider stated are filled in: technical details

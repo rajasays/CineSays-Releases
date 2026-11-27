@@ -458,16 +458,25 @@ private fun CineSays(vm: CatalogViewModel = viewModel(), startTab: String = "Hom
     streamState.playing?.let { p ->
         Dialog(onDismissRequest = streaming::closePlayer, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
             NativePlayerScreen(p, streamState.prefs, onProgress = { pos, dur -> streaming.saveProgress(p, pos, dur) }, onClose = streaming::closePlayer,
+                onSourcePlayed = { streaming.rememberPlayedSource(p) },
                 onNext = p.next?.let { { streaming.playNext { ref -> openWatchNowFor(ref) } } },
                 onFindSources = p.record.ref()?.let { ref -> { streaming.closePlayer(); if (streamState.watchNow == null) openWatchNowFor(ref) } },
                 onSubtitlePref = { lang -> streaming.updatePrefs { if (lang == null) it.copy(subtitleMode = "off") else it.copy(subtitleMode = "on", subtitleLanguage = lang) } })
         }
     }
-    if (streamState.preparing) Dialog(onDismissRequest = streaming::cancelSourcePreparation) {
-        Row(Modifier.background(Cs.panel, RoundedCornerShape(16.dp)).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Cs.accent)
-            Text("Getting the video ready…", color = Cs.text)
+    if (streamState.preparing) {
+        val watch = streamState.watchNow
+        val selected = watch?.selected
+        Dialog(
+            onDismissRequest = streaming::cancelSourcePreparation,
+            properties = DialogProperties(usePlatformDefaultWidth = watch == null, decorFitsSystemWindows = watch == null)
+        ) {
+            if (watch != null) {
+                TorrentPuzzleLoading(selected?.title ?: watch.item.label,
+                    selected?.poster?.takeIf { it.isNotBlank() } ?: watch.item.poster, "Getting the video ready…")
+            } else {
+                TorrentLoadingCard("CineSays", null, "Getting the video ready…")
+            }
         }
     }
     if (state.playerBusy) Dialog(onDismissRequest = vm::closePlayer) {

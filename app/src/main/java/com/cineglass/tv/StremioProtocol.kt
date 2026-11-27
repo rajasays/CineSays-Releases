@@ -92,7 +92,7 @@ object StremioProtocol {
             val index = o.get("fileIdx")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
                 ?.asString?.toIntOrNull()?.takeIf { it >= 0 }
             hash?.lowercase()?.takeIf { Regex("[0-9a-f]{40}").matches(it) && (allowTorrentStreams || it in authorizedHashes) && (!o.has("fileIdx") || o.get("fileIdx").isJsonNull || index != null) }
-                ?.let { DebridTorrent(it, index, hints?.str("filename")?.take(512), directPlayback = (allowTorrentStreams || it in authorizedHashes), debridPlayback = false) }
+                ?.let { DebridTorrent(it, index, hints?.str("filename")?.take(512), directPlayback = (allowTorrentStreams || it in authorizedHashes), debridPlayback = false, trackers = approvedTrackers(o, allowedHosts)) }
         } else null
         if (torrent != null && (url == null || url.startsWith("magnet:", true))) {
             return stream(null, StreamKind.TORRENT, false, null).copy(debridTorrent = torrent)
@@ -113,6 +113,22 @@ object StremioProtocol {
             else -> null
         }
     }
+
+    private fun approvedTrackers(stream: JsonObject, allowedHosts: Collection<String>): List<String> =
+        stream.arr("sources")?.take(32)?.mapNotNull { source ->
+            if (!source.isJsonPrimitive || !source.asJsonPrimitive.isString) return@mapNotNull null
+            val hint = source.asString
+            if (!hint.startsWith("tracker:") || hint.length > 2048) return@mapNotNull null
+            val tracker = hint.removePrefix("tracker:")
+            val uri = runCatching { java.net.URI(tracker) }.getOrNull() ?: return@mapNotNull null
+            val host = uri.host?.lowercase() ?: return@mapNotNull null
+            tracker.takeIf {
+                uri.scheme?.lowercase() in setOf("https", "udp") &&
+                    uri.rawUserInfo == null && uri.rawFragment == null &&
+                    (uri.port == -1 || uri.port in 1..65535) &&
+                    allowedHosts.any { approved -> approved.equals(host, ignoreCase = true) }
+            }
+        }?.distinct()?.take(8).orEmpty()
 
     fun subtitleMime(url: String): String? {
         val p = runCatching { java.net.URI(url).path }.getOrNull().orEmpty().lowercase()

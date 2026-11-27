@@ -108,30 +108,67 @@ fun describePlaybackError(e: PlaybackException): String {
 fun NativePlayerScreen(
     playback: NativePlayback, prefs: PlaybackPrefs,
     onProgress: (Long, Long) -> Unit, onClose: () -> Unit,
-    onNext: (() -> Unit)?, onFindSources: (() -> Unit)?, onSubtitlePref: (String?) -> Unit
+    onNext: (() -> Unit)?, onFindSources: (() -> Unit)?, onSubtitlePref: (String?) -> Unit,
+    onSourcePlayed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val player = remember(playback.url) { buildPlayer(context, playback, prefs) }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     var error by remember(playback.url) { mutableStateOf<String?>(null) }
     var ended by remember(playback.url) { mutableStateOf(false) }
+    var loading by remember(playback.url) { mutableStateOf(true) }
+    var firstFrameRendered by remember(playback.url) { mutableStateOf(false) }
     var picker by remember { mutableStateOf<Int?>(null) } // C.TRACK_TYPE_* or SPEED
     var seekHint by remember { mutableStateOf<String?>(null) }
 
+    var sourceReported by remember(player) { mutableStateOf(false) }
     fun report() {
+        // A failed attempt can expose the requested resume position before playback starts.
+        if (playback.sourceKey != null && !sourceReported) return
         val d = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         if (d > 0 || player.currentPosition > 0) onProgress(player.currentPosition, d)
     }
 
     DisposableEffect(player) {
         val torrentDiagnostics = playback.torrent != null
+        val playerObservedAt = SystemClock.elapsedRealtime()
+        var firstFrameLogged = false
         var bufferingStartedAt = 0L
+        val seekRetry = TorrentSeekRetry()
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 if (torrentDiagnostics) Log.w("CineSaysTorrent", "player_error code=${e.errorCodeName} cause=${e.cause?.javaClass?.simpleName}")
+                val timeoutAt = playback.torrent?.lastPieceTimeoutAtMs
+                if (e.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED &&
+                    timeoutAt != null && seekRetry.claim(SystemClock.elapsedRealtime(), timeoutAt)) {
+                    Log.i("CineSaysTorrent", "seek_retry_after_piece_timeout positionMs=${player.currentPosition}")
+                    player.prepare()
+                    return
+                }
                 error = describePlaybackError(e); report()
             }
+            override fun onRenderedFirstFrame() {
+                firstFrameRendered = true
+                if (torrentDiagnostics && !firstFrameLogged) {
+                    firstFrameLogged = true
+                    Log.i("CineSaysTorrent", "timing_first_frame sincePlayerAttachMs=${SystemClock.elapsedRealtime() - playerObservedAt} positionMs=${player.currentPosition}")
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (torrentDiagnostics && reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    seekRetry.begin(SystemClock.elapsedRealtime())
+                    Log.i("CineSaysTorrent", "timing_seek fromMs=${oldPosition.positionMs} targetMs=${newPosition.positionMs}")
+                }
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
+                loading = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE
+                if (state == Player.STATE_READY || state == Player.STATE_ENDED) seekRetry.clear()
                 if (torrentDiagnostics) {
                     val now = SystemClock.elapsedRealtime()
                     if (state == Player.STATE_BUFFERING) {
@@ -144,8 +181,14 @@ fun NativePlayerScreen(
                 }
                 if (state == Player.STATE_ENDED) { ended = true; report() }
             }
-            override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) report() } // pause / stop
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying && !sourceReported) {
+                    sourceReported = true
+                    onSourcePlayed()
+                } else if (!isPlaying) report()
+            }
         }
+        loading = player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_IDLE
         player.addListener(listener)
         onDispose { report(); player.removeListener(listener); player.release() } // one player at a time, always released
     }
@@ -160,6 +203,7 @@ fun NativePlayerScreen(
     // Torrent sources can stall after a seek as well as at startup. The warning
     // is advisory: never auto-switch sources, stop the torrent or discard progress.
     var slowStart by remember(playback.url) { mutableStateOf(false) }
+    var torrentBufferedMs by remember(playback.url) { mutableStateOf(0L) }
     var torrentHealth by remember(playback.url) { mutableStateOf<String?>(null) }
     LaunchedEffect(player) {
         var waited = 0
@@ -170,6 +214,7 @@ fun NativePlayerScreen(
             waited = if (stuck) waited + 1 else 0
             slowStart = waited >= 15
             if (playback.torrent != null) {
+                torrentBufferedMs = if (buffering) player.totalBufferedDuration.coerceAtLeast(0) else 0L
                 if (!slowStart) torrentHealth = null
                 else if (waited == 15 || waited % 5 == 0) {
                     torrentHealth = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -209,7 +254,7 @@ fun NativePlayerScreen(
                     this.player = player
                     useController = true
                     controllerShowTimeoutMs = 4000
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShowBuffering(if (playback.torrent != null) PlayerView.SHOW_BUFFERING_NEVER else PlayerView.SHOW_BUFFERING_ALWAYS)
                     // One settings menu (CineSays' ⚙ in the header), so the controller's own gear and CC button are hidden.
                     setShowSubtitleButton(false)
                     findViewById<android.view.View>(androidx.media3.ui.R.id.exo_settings)?.visibility = android.view.View.GONE
@@ -252,6 +297,12 @@ fun NativePlayerScreen(
                 .focusable())
             seekHint?.let { Text(it, color = Cs.text, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .6f), RoundedCornerShape(12.dp)).padding(horizontal = 18.dp, vertical = 10.dp)) }
+
+            if (playback.torrent != null && loading && error == null && !ended) {
+                TorrentPuzzleLoading(playback.title, playback.record.poster?.takeIf { it.isNotBlank() }
+                    ?: playback.item?.poster,
+                    if (firstFrameRendered) "Buffering video…" else "Loading stream…", torrentBufferedMs)
+            }
 
             if (slowStart && error == null) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp).widthIn(max = 640.dp)
                 .background(Cs.panel.copy(alpha = .92f), RoundedCornerShape(16.dp)).border(1.dp, Cs.line, RoundedCornerShape(16.dp)).padding(18.dp),
@@ -435,6 +486,52 @@ private fun FullScreenPlayback() {
 }
 
 
+/** Preparation loading view. Artwork is optional and never blocks playback. */
+@Composable
+internal fun TorrentLoadingCard(title: String, poster: String?, status: String,
+    modifier: Modifier = Modifier) {
+    val motion = androidx.compose.animation.core.rememberInfiniteTransition(label = "torrent loading")
+    val glow = motion.animateFloat(
+        initialValue = .22f,
+        targetValue = .62f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(1150),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "poster glow"
+    )
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier.widthIn(max = 440.dp).background(
+            Brush.verticalGradient(listOf(Cs.panel, Color.Black.copy(alpha = .96f))), shape
+        ).border(1.dp, Cs.line, shape).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        poster?.takeIf { it.isNotBlank() }?.let { path ->
+            val posterShape = RoundedCornerShape(12.dp)
+            Box(Modifier.size(112.dp, 168.dp).clip(posterShape)) {
+                AsyncImage(
+                    model = if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/w342$path",
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(Modifier.matchParentSize().graphicsLayer { alpha = glow.value }
+                    .border(2.dp, Cs.accent, posterShape))
+            }
+        }
+        Text(title, color = Cs.text, fontSize = 21.sp, fontWeight = FontWeight.Bold,
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
+        androidx.compose.material3.LinearProgressIndicator(
+            modifier = Modifier.width(132.dp).clip(RoundedCornerShape(8.dp)),
+            color = Cs.accent,
+            trackColor = Cs.line
+        )
+        Text(status, color = Cs.textSoft, fontSize = 14.sp)
+    }
+}
+
 @Composable
 private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier.widthIn(max = 560.dp).padding(24.dp).background(Cs.panel.copy(alpha = .94f), RoundedCornerShape(20.dp))
@@ -444,7 +541,7 @@ private fun PlayerOverlay(modifier: Modifier, content: @Composable ColumnScope.(
 @OptIn(UnstableApi::class)
 private fun buildPlayer(context: Context, p: NativePlayback, prefs: PlaybackPrefs): ExoPlayer {
     val http = DefaultHttpDataSource.Factory().setUserAgent("CineSays/${BuildConfig.VERSION_NAME} (Android TV)")
-        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) 40_000 else 15_000)
+        .setAllowCrossProtocolRedirects(false).setConnectTimeoutMs(10_000).setReadTimeoutMs(if (p.url.startsWith("http://127.0.0.1:")) TorrentTransportPolicy.HTTP_READ_TIMEOUT_MS else 15_000)
     val load = if (prefs.buffering == "large") DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 120_000, 2_500, 6_000).build()
         else DefaultLoadControl()
     val player = ExoPlayer.Builder(context)
@@ -782,10 +879,29 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
     val gap = 12.dp
     val tileWidth = (contentWidth - gap * (columns - 1)) / columns
 
+    val previous = remember(w.options, w.lastPlayedSource) {
+        w.lastPlayedSource?.let { key ->
+            w.options.firstOrNull { action ->
+                when (action) {
+                    is WatchAction.PlayNative -> action.stream.historyKey() == key
+                    is WatchAction.PlayTorrent -> action.stream.historyKey() == key
+                    else -> false
+                }
+            }
+        }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
+        when (previous) {
+            is WatchAction.PlayNative -> FeaturedSourceCard(previous.stream, featured = true,
+                compact = layout == WatchLayout.PHONE, modifier = focusMod(), lastPlayed = true) { onAction(previous) }
+            is WatchAction.PlayTorrent -> SourceCard(previous.stream, focusMod(),
+                otherSource = true, lastPlayed = true) { onAction(previous) }
+            else -> Unit
+        }
         if (w.searching) SearchingPlaceholder(layout)
 
-        val native = w.options.filterIsInstance<WatchAction.PlayNative>()
+        val native = w.options.filterIsInstance<WatchAction.PlayNative>().filter { it != previous }
         if (native.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Play in CineSays", native.size.takeIf { it > 1 })
             native.forEachIndexed { i, a -> FeaturedSourceCard(a.stream, featured = i == 0, compact = layout == WatchLayout.PHONE, modifier = focusMod()) { onAction(a) } }
@@ -809,9 +925,8 @@ private fun SourcesSection(w: WatchNowState, layout: WatchLayout, contentWidth: 
             }
         }
 
-        // Other Sources: kept exactly as built (card content unchanged), only placed under a matching heading.
-        val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>()
-            .sortedBy { SourceDetails.sizeForSorting(it.stream) ?: Long.MAX_VALUE }
+        // Preserve the discovery order within Other Sources.
+        val torrents = w.options.filterIsInstance<WatchAction.PlayTorrent>().filter { it != previous }
         if (torrents.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeading("Other Sources", torrents.size)
             torrents.forEach { a -> SourceCard(a.stream, focusMod(), otherSource = true) { onAction(a) } }
@@ -872,13 +987,13 @@ private fun SearchingPlaceholder(layout: WatchLayout) {
 
 /** The in-app source: big play disc, title, the facts the source stated (unknown shown as such), licence. */
 @Composable
-private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Boolean, modifier: Modifier, lastPlayed: Boolean = false, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(20.dp)
     val glow = if (featured) Brush.horizontalGradient(listOf(Cs.accent.copy(alpha = .22f), Cs.surface.copy(alpha = 0f))) else Brush.horizontalGradient(listOf(Cs.surface, Cs.surface))
     Row(modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.graphicsLayer { val k = if (focused) 1.015f else 1f; scaleX = k; scaleY = k }
         .clip(shape).background(Cs.surface, shape).background(glow, shape)
-        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (featured) Cs.accent.copy(alpha = .55f) else Cs.line, shape)
+        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (featured || lastPlayed) Cs.accent.copy(alpha = .55f) else Cs.line, shape)
         .clickable(onClick = onClick).padding(horizontal = if (compact) 14.dp else 22.dp, vertical = if (compact) 14.dp else 18.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 20.dp)) {
         Box(Modifier.size(if (compact) 48.dp else 60.dp).background(if (focused || featured) Cs.accent else Cs.surfaceHigh, androidx.compose.foundation.shape.CircleShape),
@@ -887,6 +1002,7 @@ private fun FeaturedSourceCard(s: PlayableStream, featured: Boolean, compact: Bo
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(s.sourceName, color = Cs.text, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (lastPlayed) CsBadge("Last played")
             // Only what the source stated; anything else reads "unknown".
             val facts = listOf("Resolution" to s.resolution, "HDR" to s.hdr, "Audio" to s.audio, "Size" to s.sizeBytes?.let { formatSize(it) })
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -925,16 +1041,17 @@ private fun ServiceTile(name: String, sub: String, mine: Boolean, width: android
 }
 
 @Composable
-private fun SourceCard(s: PlayableStream, modifier: Modifier, otherSource: Boolean = false, onClick: () -> Unit) {
+private fun SourceCard(s: PlayableStream, modifier: Modifier, otherSource: Boolean = false, lastPlayed: Boolean = false, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(16.dp)
     Row(modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.graphicsLayer { val k = if (focused) 1.015f else 1f; scaleX = k; scaleY = k }
         .clip(shape).background(if (focused) Cs.surfaceHigh else Cs.surface, shape)
-        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else Cs.line, shape).clickable(onClick = onClick)
+        .border(if (focused) 3.dp else 1.dp, if (focused) Cs.focusRing else if (lastPlayed) Cs.accent else Cs.line, shape).clickable(onClick = onClick)
         .padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("▶", color = Cs.accent, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(if (otherSource) SourceDetails.heading(s) else s.sourceName, color = Cs.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (lastPlayed) CsBadge("Last played")
             if (otherSource) {
                 val details = remember(s) { SourceDetails.summary(s) }
                 Text(details, color = Cs.textMuted, fontSize = 12.sp)

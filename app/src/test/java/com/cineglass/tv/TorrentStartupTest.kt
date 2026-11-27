@@ -15,7 +15,8 @@ class TorrentStartupTest {
         // 2 MiB pieces need only four scheduled pieces.
         assertEquals((10..13).toList(), TorrentRules.adaptiveReadWindow(10, 100, 2 * 1024 * 1024))
         // Even large pieces retain a minimum near-term look-ahead.
-        assertEquals((10..13).toList(), TorrentRules.adaptiveReadWindow(10, 100, 4 * 1024 * 1024))
+        assertEquals((10..11).toList(), TorrentRules.adaptiveReadWindow(10, 100, 4 * 1024 * 1024))
+        assertEquals((10..11).toList(), TorrentRules.adaptiveReadWindow(10, 100, 8 * 1024 * 1024))
         assertEquals(listOf(98, 99), TorrentRules.adaptiveReadWindow(98, 99, 256 * 1024))
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.adaptiveReadWindow(Int.MAX_VALUE, Int.MAX_VALUE, 256 * 1024))
         assertTrue(TorrentRules.adaptiveReadWindow(10, 9, 256 * 1024).isEmpty())
@@ -145,4 +146,29 @@ class TorrentStartupTest {
         assertEquals(listOf(Int.MAX_VALUE), TorrentRules.readWindow(Int.MAX_VALUE, Int.MAX_VALUE))
         assertTrue(TorrentRules.readWindow(10, 9).isEmpty())
     }
+    @Test fun restartedPieceCanExtendWaitEvenBelowPreviousHighWaterMark() {
+        val budget = TorrentPieceWaitBudget(0)
+        budget.observe(6_000, 131)
+        budget.observe(12_000, 1)
+        assertTrue(budget.expired(25_000)) // A reset alone is not progress.
+        val restarted = TorrentPieceWaitBudget(0)
+        restarted.observe(6_000, 131)
+        restarted.observe(12_000, 1)
+        restarted.observe(22_000, 121)
+        assertFalse(restarted.expired(25_000))
+        assertTrue(restarted.expired(32_000))
+    }
+
+    @Test fun seekRetryRequiresRecentTimeoutAfterSeekAndIsBounded() {
+        val retry = TorrentSeekRetry()
+        assertFalse(retry.claim(30_000, 29_000))
+        retry.begin(30_000)
+        assertFalse(retry.claim(31_000, 29_000))
+        assertFalse(retry.claim(56_000, 50_000))
+        assertTrue(retry.claim(56_001, 56_000))
+        assertFalse(retry.claim(57_000, 56_000))
+        retry.clear()
+        assertFalse(retry.claim(57_000, 56_000))
+    }
+
 }

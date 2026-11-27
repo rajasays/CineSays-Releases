@@ -6,7 +6,6 @@ import androidx.media3.common.C
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DataSource
 import android.net.Uri
-import android.os.SystemClock
 import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -14,9 +13,19 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.util.UUID
-import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal interface TorrentHttpSource : AutoCloseable {
+    fun open(position: Long, length: Long, cancellation: TorrentReadCancellation)
+    fun read(buffer: ByteArray, length: Int): Int
+}
 
 /**
  * Private, per-playback HTTP byte-range bridge for the existing verified piece-aware
@@ -25,15 +34,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 @OptIn(UnstableApi::class)
 internal class LocalTorrentHttp private constructor(
     private val listener: ServerSocket,
-    private val factory: DataSource.Factory,
+    private val factory: () -> TorrentHttpSource,
     private val size: Long,
-    private val sourceUri: Uri
+    private val log: (String) -> Unit
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val token = UUID.randomUUID().toString().replace("-", "")
-    private val workers = Executors.newFixedThreadPool(3) { task ->
-        Thread(task, "CineSays-Loopback-Worker").apply { isDaemon = true }
-    }
+    private val clients = ConcurrentHashMap.newKeySet<Socket>()
+    // No unbounded queue behind stalled ranges. Excess clients receive a closed
+    // connection and can retry through Media3's bounded loader retry policy.
+    private val workers = ThreadPoolExecutor(0, 6, 30, TimeUnit.SECONDS,
+        SynchronousQueue<Runnable>(), { task ->
+            Thread(task, "CineSays-Loopback-Worker").apply { isDaemon = true }
+        })
     val url: String = "http://127.0.0.1:${listener.localPort}/video/$token"
 
     init {
@@ -41,7 +54,15 @@ internal class LocalTorrentHttp private constructor(
             while (!closed.get()) {
                 try {
                     val client = listener.accept()
-                    workers.execute { serve(client) }
+                    clients.add(client)
+                    try {
+                        workers.execute {
+                            try { serve(client) } finally { clients.remove(client) }
+                        }
+                    } catch (_: RejectedExecutionException) {
+                        clients.remove(client)
+                        client.close()
+                    }
                 } catch (_: SocketException) {
                     if (closed.get()) break
                 } catch (_: Exception) {
@@ -53,7 +74,7 @@ internal class LocalTorrentHttp private constructor(
 
     private fun serve(client: Socket) {
         client.use { socket ->
-            val requestStarted = SystemClock.elapsedRealtime()
+            val requestStarted = (System.nanoTime() / 1_000_000)
             socket.soTimeout = 30_000
             try {
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
@@ -82,24 +103,42 @@ internal class LocalTorrentHttp private constructor(
                 val extra = if (range == null) "" else "Content-Range: bytes $from-$to/$size\r\n"
                 val header = "HTTP/1.1 $status\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n$extra" +
                     "Content-Length: $count\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
-                val source = if (parts[0] == "GET") factory.createDataSource() else null
+                val source = if (parts[0] == "GET") factory() else null
+                val cancellation = TorrentReadCancellation()
+                val finished = AtomicBoolean(false)
+                // Once headers are parsed, no request body is expected. Detect FIN
+                // even while the worker is inside a missing-piece wait.
+                socket.soTimeout = 1_000
+                val disconnectWatcher = if (source != null) Thread({
+                    try {
+                        while (!finished.get() && !closed.get()) {
+                            try {
+                                if (reader.read() == -1) { cancellation.cancel(); break }
+                                // Pipelining/request bodies are unsupported on this private endpoint.
+                                cancellation.cancel(); break
+                            } catch (_: SocketTimeoutException) { /* check lifecycle again */ }
+                        }
+                    } catch (_: Exception) {
+                        cancellation.cancel()
+                    }
+                }, "CineSays-Loopback-Cancel").apply { isDaemon = true; start() } else null
                 var headersSent = false
                 var writtenBytes = 0L
                 try {
                     // Do not announce a successful HTTP response until its first
                     // verified torrent piece is readable. On peer timeout, return 503
                     // instead of a misleading 200 with an abruptly truncated body.
-                    source?.open(DataSpec.Builder().setUri(sourceUri).setPosition(from).setLength(count).build())
+                    source?.open(from, count, cancellation)
                     val out = socket.getOutputStream()
                     out.write(header.toByteArray(Charsets.US_ASCII))
                     headersSent = true
-                    val firstPieceMs = SystemClock.elapsedRealtime() - requestStarted
-                    if (firstPieceMs >= 1_000) Log.i("CineSaysTorrent", "http_first_piece method=${parts[0]} kind=$requestKind waitMs=$firstPieceMs")
+                    val firstPieceMs = (System.nanoTime() / 1_000_000) - requestStarted
+                    if (firstPieceMs >= 1_000) log("http_first_piece method=${parts[0]} kind=$requestKind waitMs=$firstPieceMs")
                     if (source != null) {
                         var left = count
                         val bytes = ByteArray(64 * 1024)
                         while (left > 0 && !closed.get()) {
-                            val read = source.read(bytes, 0, minOf(left, bytes.size.toLong()).toInt())
+                            val read = source.read(bytes, minOf(left, bytes.size.toLong()).toInt())
                             if (read == C.RESULT_END_OF_INPUT || read <= 0) break
                             out.write(bytes, 0, read)
                             left -= read
@@ -107,20 +146,23 @@ internal class LocalTorrentHttp private constructor(
                         }
                     }
                     out.flush()
-                    val elapsedMs = SystemClock.elapsedRealtime() - requestStarted
-                    if (elapsedMs >= 3_000) Log.i("CineSaysTorrent", "http_transfer method=${parts[0]} kind=$requestKind bytes=$writtenBytes elapsedMs=$elapsedMs")
+                    val elapsedMs = (System.nanoTime() / 1_000_000) - requestStarted
+                    if (elapsedMs >= 3_000) log("http_transfer method=${parts[0]} kind=$requestKind bytes=$writtenBytes elapsedMs=$elapsedMs")
                 } catch (e: Exception) {
                     // Seeking and metadata probing commonly cancel a range request.
                     // A socket closed by Media3 after headers is not a torrent failure.
-                    val abortedByClient = headersSent && e is SocketException
-                    val detail = "http_${if (abortedByClient) "client_closed" else "failure"} method=${parts[0]} kind=$requestKind headersSent=$headersSent bytes=$writtenBytes elapsedMs=${SystemClock.elapsedRealtime() - requestStarted} cause=${e.javaClass.simpleName}"
-                    if (abortedByClient) Log.i("CineSaysTorrent", detail)
-                    else Log.w("CineSaysTorrent", detail)
+                    val abortedByClient = cancellation.isCancelled() || (headersSent && e is SocketException)
+                    val detail = "http_${if (abortedByClient) "client_closed" else "failure"} method=${parts[0]} kind=$requestKind headersSent=$headersSent bytes=$writtenBytes elapsedMs=${(System.nanoTime() / 1_000_000) - requestStarted} cause=${e.javaClass.simpleName}"
+                    log(detail)
                     if (!headersSent && !closed.get()) runCatching {
                         reply(socket, 503, "Service Unavailable")
                     }
                 } finally {
-                    source?.close()
+                    finished.set(true)
+                    cancellation.cancel()
+                    runCatching { source?.close() }
+                    runCatching { socket.close() }
+                    disconnectWatcher?.interrupt()
                 }
             } catch (_: Exception) {
                 // Client disconnect, seek interruption, or an unavailable torrent piece.
@@ -137,19 +179,34 @@ internal class LocalTorrentHttp private constructor(
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             listener.close()
+            clients.forEach { runCatching { it.close() } }
             workers.shutdownNow()
         }
     }
 
     companion object {
-        fun start(source: TorrentPlayback): LocalTorrentHttp {
+        internal fun start(size: Long, factory: () -> TorrentHttpSource,
+            log: (String) -> Unit = {}): LocalTorrentHttp {
+            require(size > 0)
             val socket = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
-            return try {
-                LocalTorrentHttp(socket, source.dataSourceFactory(), source.contentLength, Uri.parse(source.uri))
-            } catch (failure: Throwable) {
-                socket.close()
-                throw failure
-            }
+            return try { LocalTorrentHttp(socket, factory, size, log) }
+            catch (failure: Throwable) { socket.close(); throw failure }
+        }
+
+        fun start(source: TorrentPlayback): LocalTorrentHttp {
+            val dataSources = source.dataSourceFactory()
+            val uri = Uri.parse(source.uri)
+            return start(source.contentLength, {
+                val dataSource = dataSources.createDataSource()
+                object : TorrentHttpSource {
+                    override fun open(position: Long, length: Long, cancellation: TorrentReadCancellation) {
+                        dataSource.open(DataSpec.Builder().setUri(uri).setPosition(position)
+                            .setLength(length).setCustomData(cancellation).build())
+                    }
+                    override fun read(buffer: ByteArray, length: Int) = dataSource.read(buffer, 0, length)
+                    override fun close() = dataSource.close()
+                }
+            }, { message -> Log.i("CineSaysTorrent", message) })
         }
     }
 }

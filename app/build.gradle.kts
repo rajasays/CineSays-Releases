@@ -84,6 +84,15 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
     testImplementation("junit:junit:4.13.2")
+    // Optional desktop native engine for deterministic, tracker-free loopback tests.
+    // Supply the matching official jlibtorrent Linux/macOS/Windows runtime JAR.
+    providers.gradleProperty("torrentNativeJar").orNull?.let {
+        testRuntimeOnly(files(it))
+        tasks.withType<Test>().configureEach {
+            systemProperty("cinesays.nativeTorrentTests", "true")
+            systemProperty("cinesays.nativeTorrentPeerTest", providers.gradleProperty("torrentPeerTest").orElse("false").get())
+        }
+    }
     implementation("org.apache.commons:commons-csv:1.11.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")

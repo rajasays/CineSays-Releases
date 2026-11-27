@@ -88,4 +88,24 @@ class StremioProtocolTest {
             "ex", "Example", hosts).single()
         assertTrue(s.subtitles.isEmpty())
     }
+    @Test fun torrentMagnetIncludesOnlyApprovedTrackerHints() {
+        val hash = "0123456789abcdef0123456789abcdef01234567"
+        val json = """{"streams":[{"infoHash":"$hash","sources":[
+            "tracker:udp://media.example.org:6969/announce",
+            "tracker:https://media.example.org/announce?a=1&b=2",
+            "tracker:udp://media.example.org:6969/announce",
+            "tracker:https://unapproved.example.org/announce",
+            "tracker:https://user@media.example.org/announce",
+            "dht:$hash"]}]}"""
+        val torrent = StremioProtocol.parseStreams(json, "ex", "Example", hosts,
+            authorizedHashes = setOf(hash)).single().debridTorrent!!
+        assertEquals(listOf(
+            "udp://media.example.org:6969/announce",
+            "https://media.example.org/announce?a=1&b=2"
+        ), torrent.trackers)
+        assertTrue(torrent.magnetUri().endsWith(
+            "&tr=https%3A%2F%2Fmedia.example.org%2Fannounce%3Fa%3D1%26b%3D2"))
+        assertNull(StremioProtocol.parseStreams(json, "ex", "Example", hosts).single().debridTorrent)
+    }
+
 }
